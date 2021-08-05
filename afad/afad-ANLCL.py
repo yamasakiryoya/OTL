@@ -215,9 +215,9 @@ for RANDOM_SEED in range(30):
     model.to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    def compute_errors(model, data_loader, labeling):
+    def compute_errors(model, data_loader, labeling, train=None, V_Z=None, V_A=None, V_S=None):
         MZE, MAE, MSE, num_examples = 0., 0., 0., 0
-        if labeling=='SMB' or labeling=='ROT':
+        if labeling=='SMB' or (labeling=='ROT' and train==True):
             L_Z = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
             for j in range(NUM_CLASSES):
                 for k in range(NUM_CLASSES):
@@ -230,12 +230,12 @@ for RANDOM_SEED in range(30):
             for j in range(NUM_CLASSES):
                 for k in range(NUM_CLASSES):
                     L_S[j,k] = (j-k)**2
-        if labeling=='ROT':
+        if labeling=='ROT' and train==True:
             allg = torch.tensor([], dtype=torch.float).to(DEVICE)
             ally = torch.tensor([], dtype=torch.long).to(DEVICE)
         for i, (features, targets, _) in enumerate(data_loader):
             features, targets = features.to(DEVICE), targets.to(DEVICE)
-            g, b, logits, probas = model(features)
+            g, b, _, probas = model(features)
             num_examples += targets.size(0)
             #
             if labeling=='SMB':
@@ -249,38 +249,44 @@ for RANDOM_SEED in range(30):
                 predicts_S = torch.argmin(torch.mm(Mprobas, L_S), 1)
                 MSE += torch.sum((predicts_S - targets)**2)
             if labeling=='CT':
-                predicts = torch.sum(logits > 0., 1)
+                predicts = torch.sum(g-b > 0., 1)
                 #
                 MZE += torch.sum(predicts != targets)
                 MAE += torch.sum(torch.abs(predicts - targets))
                 MSE += torch.sum((predicts - targets)**2)
-            if labeling=='ROT':
+            if labeling=='ROT' and train==True:
                 allg = torch.cat((allg, g))
                 ally = torch.cat((ally, targets))
-        if labeling=='ROT':
+            if labeling=='ROT' and train==False:
+                predicts_Z = torch.sum(g-V_Z > 0., 1)
+                MZE += torch.sum(predicts_Z != targets)
+                #
+                predicts_A = torch.sum(g-V_A > 0., 1)
+                MAE += torch.sum(torch.abs(predicts_A - targets))
+                #
+                predicts_S = torch.sum(g-V_S > 0., 1)
+                MSE += torch.sum((predicts_S - targets)**2)
+        if labeling=='ROT' and train==True:
             allg, indeces = torch.sort(allg,0)
             ally = ally[indeces.reshape(-1)]
             #
             M_Z = torch.zeros(NUM_CLASSES-1, num_examples+1, dtype=torch.float).to(DEVICE)
-            for k in range(NUM_CLASSES-1):
-                for i in range(num_examples):
-                    M_Z[k,i+1] = M_Z[k,i] + L_Z[k,ally[i]] - L_Z[int(k+1),ally[i]]
+            for i in range(num_examples):
+                M_Z[:,i+1] = M_Z[:,i] + L_Z[:-1,ally[i]] - L_Z[1:,ally[i]]
             tmp1 = torch.argmin(M_Z, 1)-1; tmp1[tmp1<0] = 0
             tmp2 = torch.argmin(M_Z, 1);   tmp2[tmp2==num_examples] = num_examples-1
             V_Z = (allg[tmp1,0] + allg[tmp2,0])/2.
             #
             M_A = torch.zeros(NUM_CLASSES-1, num_examples+1, dtype=torch.float).to(DEVICE)
-            for k in range(NUM_CLASSES-1):
-                for i in range(num_examples):
-                    M_A[k,i+1] = M_A[k,i] + L_A[k,ally[i]] - L_A[int(k+1),ally[i]]
+            for i in range(num_examples):
+                M_A[:,i+1] = M_A[:,i] + L_A[:-1,ally[i]] - L_A[1:,ally[i]]
             tmp1 = torch.argmin(M_A, 1)-1; tmp1[tmp1<0] = 0
             tmp2 = torch.argmin(M_A, 1);   tmp2[tmp2==num_examples] = num_examples-1
             V_A = (allg[tmp1,0] + allg[tmp2,0])/2.
             #
             M_S = torch.zeros(NUM_CLASSES-1, num_examples+1, dtype=torch.float).to(DEVICE)
-            for k in range(NUM_CLASSES-1):
-                for i in range(num_examples):
-                    M_S[k,i+1] = M_S[k,i] + L_S[k,ally[i]] - L_S[int(k+1),ally[i]]
+            for i in range(num_examples):
+                M_S[:,i+1] = M_S[:,i] + L_S[:-1,ally[i]] - L_S[1:,ally[i]]
             tmp1 = torch.argmin(M_S, 1)-1; tmp1[tmp1<0] = 0
             tmp2 = torch.argmin(M_S, 1);   tmp2[tmp2==num_examples] = num_examples-1
             V_S = (allg[tmp1,0] + allg[tmp2,0])/2.
@@ -300,8 +306,10 @@ for RANDOM_SEED in range(30):
             return MZE, MAE, torch.sqrt(MSE)
         if labeling=='CT':
             return MZE, MAE, torch.sqrt(MSE), int(torch.equal(b, torch.sort(b)[0]))
-        if labeling=='ROT':
-            return MZE, MAE, torch.sqrt(MSE), int(torch.equal(b, torch.sort(b)[0])), int(torch.equal(V_Z, torch.sort(V_Z)[0])), int(torch.equal(V_A, torch.sort(V_A)[0])), int(torch.equal(V_S, torch.sort(V_S)[0]))
+        if labeling=='ROT' and train==True:
+            return MZE, MAE, torch.sqrt(MSE), int(torch.equal(b, torch.sort(b)[0])), int(torch.equal(V_Z, torch.sort(V_Z)[0])), int(torch.equal(V_A, torch.sort(V_A)[0])), int(torch.equal(V_S, torch.sort(V_S)[0])), V_Z, V_A, V_S
+        if labeling=='ROT' and train==False:
+            return MZE, MAE, torch.sqrt(MSE)
 
 
     ##############################
@@ -334,7 +342,8 @@ for RANDOM_SEED in range(30):
         with torch.set_grad_enabled(False):
             SMB_Z, SMB_A, SMB_S = compute_errors(model, valid_loader, 'SMB')
             CT_Z, CT_A, CT_S, b_ord = compute_errors(model, valid_loader, 'CT')
-            ROT_Z, ROT_A, ROT_S, _, vz_ord, va_ord, vs_ord = compute_errors(model, valid_loader, 'ROT')
+            _, _, _, _, vz_ord, va_ord, vs_ord, V_Z, V_A, V_S = compute_errors(model, train_loader, 'ROT', True)
+            ROT_Z, ROT_A, ROT_S = compute_errors(model, valid_loader, 'ROT', False, V_Z, V_A, V_S)
         # SAVE BEST MODELS
         if SMB_Z <= Best_SMB_Z: Best_SMB_Z, Best_SMB_Z_ep = SMB_Z, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-SMB-Z.pt'))
         if SMB_A <= Best_SMB_A: Best_SMB_A, Best_SMB_A_ep = SMB_A, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-SMB-A.pt'))
@@ -386,12 +395,12 @@ for RANDOM_SEED in range(30):
                     print(s)
                     with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
                 if labeling=='ROT':
-                    tr_MZE, tr_MAE, tr_MSE, b_ord, trvz_ord, trva_ord, trvs_ord = compute_errors(model, train_loader, labeling)
-                    va_MZE, va_MAE, va_MSE, _, vavz_ord, vava_ord, vavs_ord = compute_errors(model, valid_loader, labeling)
-                    te_MZE, te_MAE, te_MSE, _, tevz_ord, teva_ord, tevs_ord = compute_errors(model, test_loader,  labeling)
+                    tr_MZE, tr_MAE, tr_MSE, b_ord, vz_ord, va_ord, vs_ord, V_Z, V_A, V_S = compute_errors(model, train_loader, labeling, True)
+                    va_MZE, va_MAE, va_MSE = compute_errors(model, valid_loader, labeling, False, V_Z, V_A, V_S)
+                    te_MZE, te_MAE, te_MSE = compute_errors(model, test_loader,  labeling, False, V_Z, V_A, V_S)
                     #
-                    s = 'Best-%s-%s MZE/MAE/RMSE | Train: %.4f/%.4f/%.4f | Valid: %.4f/%.4f/%.4f | Test: %.4f/%.4f/%.4f, Order | b: %d | Train: %d/%d/%d | Valid: %d/%d/%d | Test: %d/%d/%d' % (
-                        labeling, task, tr_MZE, tr_MAE, tr_MSE, va_MZE, va_MAE, va_MSE, te_MZE, te_MAE, te_MSE, b_ord, trvz_ord, trva_ord, trvs_ord, vavz_ord, vava_ord, vavs_ord, tevz_ord, teva_ord, tevs_ord)
+                    s = 'Best-%s-%s MZE/MAE/RMSE | Train: %.4f/%.4f/%.4f | Valid: %.4f/%.4f/%.4f | Test: %.4f/%.4f/%.4f, Order | b&v: %d/%d/%d/%d' % (
+                        labeling, task, tr_MZE, tr_MAE, tr_MSE, va_MZE, va_MAE, va_MSE, te_MZE, te_MAE, te_MSE, b_ord, vz_ord, va_ord, vs_ord)
                     print(s)
                     with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
 
@@ -404,3 +413,4 @@ for RANDOM_SEED in range(30):
     os.remove(os.path.join(PATH, 'Best-ROT-Z.pt'))
     os.remove(os.path.join(PATH, 'Best-ROT-A.pt'))
     os.remove(os.path.join(PATH, 'Best-ROT-S.pt'))
+

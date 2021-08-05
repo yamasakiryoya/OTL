@@ -26,7 +26,7 @@ VALID_CSV_PATH = './cacd_valid.csv'
 IMAGE_PATH = '../datasets/CACD2000-centered'
 
 
-for RANDOM_SEED in range(20,30):
+for RANDOM_SEED in range(30):
     ##############################
     # Args
     ##############################
@@ -261,25 +261,22 @@ for RANDOM_SEED in range(20,30):
             ally = ally[indeces.reshape(-1)]
             #
             M_Z = torch.zeros(NUM_CLASSES-1, num_examples+1, dtype=torch.float).to(DEVICE)
-            for k in range(NUM_CLASSES-1):
-                for i in range(num_examples):
-                    M_Z[k,i+1] = M_Z[k,i] + L_Z[k,ally[i]] - L_Z[int(k+1),ally[i]]
+            for i in range(num_examples):
+                M_Z[:,i+1] = M_Z[:,i] + L_Z[:-1,ally[i]] - L_Z[1:,ally[i]]
             tmp1 = torch.argmin(M_Z, 1)-1; tmp1[tmp1<0] = 0
             tmp2 = torch.argmin(M_Z, 1);   tmp2[tmp2==num_examples] = num_examples-1
             V_Z = (allg[tmp1,0] + allg[tmp2,0])/2.
             #
             M_A = torch.zeros(NUM_CLASSES-1, num_examples+1, dtype=torch.float).to(DEVICE)
-            for k in range(NUM_CLASSES-1):
-                for i in range(num_examples):
-                    M_A[k,i+1] = M_A[k,i] + L_A[k,ally[i]] - L_A[int(k+1),ally[i]]
+            for i in range(num_examples):
+                M_A[:,i+1] = M_A[:,i] + L_A[:-1,ally[i]] - L_A[1:,ally[i]]
             tmp1 = torch.argmin(M_A, 1)-1; tmp1[tmp1<0] = 0
             tmp2 = torch.argmin(M_A, 1);   tmp2[tmp2==num_examples] = num_examples-1
             V_A = (allg[tmp1,0] + allg[tmp2,0])/2.
             #
             M_S = torch.zeros(NUM_CLASSES-1, num_examples+1, dtype=torch.float).to(DEVICE)
-            for k in range(NUM_CLASSES-1):
-                for i in range(num_examples):
-                    M_S[k,i+1] = M_S[k,i] + L_S[k,ally[i]] - L_S[int(k+1),ally[i]]
+            for i in range(num_examples):
+                M_S[:,i+1] = M_S[:,i] + L_S[:-1,ally[i]] - L_S[1:,ally[i]]
             tmp1 = torch.argmin(M_S, 1)-1; tmp1[tmp1<0] = 0
             tmp2 = torch.argmin(M_S, 1);   tmp2[tmp2==num_examples] = num_examples-1
             V_S = (allg[tmp1,0] + allg[tmp2,0])/2.
