@@ -6,9 +6,9 @@
 3. separate training, validation, and test sets: python makecsv-morph2.py, python makecsv-cacd.py, python makecsv-afad.py at ./datasets/
 
 ## experiments on classification performance
-4. experiments: e.g., python afad-NLL.py --cuda 0 at ./afad/ (for all datasets and methods)
-5. make tables: tables.ipynb at ./results/
+1. experiments: e.g., python afad-NLL.py --cuda 0 at ./afad/ (for all datasets and methods)
+2. make tables: tables.ipynb at ./results/
 
 ## experiments on computation time
-6. experiments: e.g., python afad-Time.py --cuda 0 at ./afad/
-7. make tables: read ./afad/threshold/Time/training.log
+1. experiments: e.g., python afad-Time.py --cuda 0 at ./afad/
+2. make tables: e.g., read ./afad/threshold/Time/training.log
