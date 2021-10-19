@@ -1,12 +1,11 @@
 ##############################
 # coding: utf-8
-# use like > python morph2-NLL.py --cuda 0
+# use like > python cacd-ordered-ANLCL.py --cuda 0
 ##############################
 # Imports
 ##############################
 import os
 import time
-from math import fabs
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -20,10 +19,10 @@ from PIL import Image
 
 torch.backends.cudnn.deterministic = True
 
-TRAIN_CSV_PATH = './morph2_train.csv'
-TEST_CSV_PATH  = './morph2_test.csv'
-VALID_CSV_PATH = './morph2_valid.csv'
-IMAGE_PATH = '../datasets/morph2-aligned'
+TRAIN_CSV_PATH = './cacd_train.csv'
+TEST_CSV_PATH  = './cacd_test.csv'
+VALID_CSV_PATH = './cacd_valid.csv'
+IMAGE_PATH = '../datasets/CACD2000-centered'
 
 
 for RANDOM_SEED in range(20):
@@ -39,7 +38,7 @@ for RANDOM_SEED in range(20):
     if args.cuda >= 0: DEVICE = torch.device("cuda:%d" % args.cuda)
     else: DEVICE = torch.device("cpu")
     NUM_WORKERS = args.numworkers
-    PATH = "threshold/NLL/seed"+str(RANDOM_SEED)
+    PATH = "threshold/ordered-ANLCL/seed"+str(RANDOM_SEED)
     if not os.path.exists(PATH): os.makedirs(PATH)
     LOGFILE = os.path.join(PATH, 'training.log')
     header = []
@@ -62,7 +61,7 @@ for RANDOM_SEED in range(20):
     NUM_EPOCHS = 100
 
     # Architecture
-    NUM_CLASSES = 55
+    NUM_CLASSES = 49
     BATCH_SIZE = 256
     GRAYSCALE = False
 
@@ -70,8 +69,8 @@ for RANDOM_SEED in range(20):
     ##############################
     # Dataset
     ##############################
-    class MORPH2_Dataset(Dataset):
-        """Custom Dataset for loading MORPH2 face images"""
+    class CACD_Dataset(Dataset):
+        """Custom Dataset for loading CACD face images"""
         def __init__(self, csv_path, img_dir, transform=None):
             df = pd.read_csv(csv_path, index_col=0)
             self.img_dir = img_dir
@@ -85,16 +84,18 @@ for RANDOM_SEED in range(20):
             if self.transform is not None:
                 img = self.transform(img)
             label = int(self.y[index])
-            return img, label
+            levels = [1]*label + [0]*(NUM_CLASSES - 1 - label)
+            levels = torch.tensor(levels, dtype=torch.float32)
+            return img, label, levels
 
         def __len__(self):
             return self.y.shape[0]
 
     custom_transform  = transforms.Compose([transforms.Resize((128, 128)), transforms.RandomCrop((120, 120)), transforms.ToTensor()])
     custom_transform2 = transforms.Compose([transforms.Resize((128, 128)), transforms.CenterCrop((120, 120)), transforms.ToTensor()])
-    train_dataset = MORPH2_Dataset(csv_path=TRAIN_CSV_PATH, img_dir=IMAGE_PATH, transform=custom_transform)
-    valid_dataset = MORPH2_Dataset(csv_path=VALID_CSV_PATH, img_dir=IMAGE_PATH, transform=custom_transform2)
-    test_dataset  = MORPH2_Dataset(csv_path=TEST_CSV_PATH,  img_dir=IMAGE_PATH, transform=custom_transform2)
+    train_dataset = CACD_Dataset(csv_path=TRAIN_CSV_PATH, img_dir=IMAGE_PATH, transform=custom_transform)
+    valid_dataset = CACD_Dataset(csv_path=VALID_CSV_PATH, img_dir=IMAGE_PATH, transform=custom_transform2)
+    test_dataset  = CACD_Dataset(csv_path=TEST_CSV_PATH,  img_dir=IMAGE_PATH, transform=custom_transform2)
     train_loader  = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True,  num_workers=NUM_WORKERS)
     valid_loader  = DataLoader(dataset=valid_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
     test_loader   = DataLoader(dataset=test_dataset,  batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
@@ -150,8 +151,7 @@ for RANDOM_SEED in range(20):
             self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
             self.avgpool = nn.AvgPool2d(4)
             self.fc = nn.Linear(512, 1)
-            self.b0 = nn.Parameter(torch.tensor([0.]), requires_grad=False)
-            self.bi = nn.Parameter(torch.arange(1,self.num_classes-1).float())
+            self.bi = nn.Parameter(torch.ones(self.num_classes-2).float())
 
             for m in self.modules():
                 if isinstance(m, nn.Conv2d):
@@ -189,9 +189,14 @@ for RANDOM_SEED in range(20):
             #
             x = x.view(x.size(0), -1)
             #
+            tmp = torch.zeros(self.num_classes-1).float().to(DEVICE)
+            for k in range(1, self.num_classes-1):
+                tmp[k] = tmp[k-1] + self.bi[k-1]**2
+            #
             fc = self.fc(x)
-            probas = torch.sigmoid(fc - torch.cat((self.b0,self.bi)))
-            return fc, torch.cat((self.b0,self.bi)), probas
+            logits = fc - tmp
+            probas = torch.sigmoid(logits)
+            return fc, tmp, logits, probas
 
     def resnet(num_classes, grayscale):
         """Constructs a ResNet-34 model."""
@@ -202,11 +207,9 @@ for RANDOM_SEED in range(20):
     ##############################
     # Settings
     ##############################
-    def loss_fn(g, b, targets):
-        tmpb = torch.cat((torch.tensor([-10.**8]).to(DEVICE), b, torch.tensor([10.**8]).to(DEVICE))).reshape(-1,1)
-        tmpr = torch.sigmoid(tmpb[targets+1]-g)
-        tmpl = torch.sigmoid(tmpb[targets]-g)
-        return torch.mean(-torch.log(tmpr-tmpl+.1**8))
+    def loss_fn(logits, levels):
+        val = (-torch.sum((F.logsigmoid(logits)*levels + (F.logsigmoid(logits) - logits)*(1-levels)), dim=1))
+        return torch.mean(val)
 
     torch.manual_seed(RANDOM_SEED)
     torch.cuda.manual_seed(RANDOM_SEED)
@@ -224,7 +227,7 @@ for RANDOM_SEED in range(20):
             L_A = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
             for j in range(NUM_CLASSES):
                 for k in range(NUM_CLASSES):
-                    L_A[j,k] = fabs(j-k)
+                    L_A[j,k] = abs(j-k)
             L_S = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
             for j in range(NUM_CLASSES):
                 for k in range(NUM_CLASSES):
@@ -232,9 +235,9 @@ for RANDOM_SEED in range(20):
         if labeling=='ROT' and train==True:
             allg = torch.tensor([], dtype=torch.float).to(DEVICE)
             ally = torch.tensor([], dtype=torch.long).to(DEVICE)
-        for i, (features, targets) in enumerate(data_loader):
+        for i, (features, targets, _) in enumerate(data_loader):
             features, targets = features.to(DEVICE), targets.to(DEVICE)
-            g, b, probas = model(features)
+            g, b, _, probas = model(features)
             num_examples += targets.size(0)
             #
             if labeling=='SMB':
@@ -317,17 +320,17 @@ for RANDOM_SEED in range(20):
     start_time = time.time()
 
     Best_SMB_Z, Best_SMB_A, Best_SMB_S = 10.**8, 10.**8, 10.**8
-    Best_CT_Z, Best_CT_A, Best_CT_S = 10.**8, 10.**8, 10.**8
+    Best_CT_Z,  Best_CT_A,  Best_CT_S  = 10.**8, 10.**8, 10.**8
     Best_ROT_Z, Best_ROT_A, Best_ROT_S = 10.**8, 10.**8, 10.**8
 
     for epoch in range(NUM_EPOCHS):
         # TRAINING
         model.train()
-        for batch_idx, (features, targets) in enumerate(train_loader):
-            features, targets = features.to(DEVICE), targets.to(DEVICE)
+        for batch_idx, (features, targets, levels) in enumerate(train_loader):
+            features, targets, levels = features.to(DEVICE), targets.to(DEVICE), levels.to(DEVICE)
             # FORWARD AND BACK PROP
-            g, b, _ = model(features)
-            loss = loss_fn(g, b, targets)
+            _, _, logits, _ = model(features)
+            loss = loss_fn(logits, levels)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -340,16 +343,16 @@ for RANDOM_SEED in range(20):
         model.eval()
         with torch.set_grad_enabled(False):
             SMB_Z, SMB_A, SMB_S = compute_errors(model, valid_loader, 'SMB')
-            CT_Z, CT_A, CT_S, b_ord = compute_errors(model, valid_loader, 'CT')
+            CT_Z,  CT_A , CT_S, b_ord = compute_errors(model, valid_loader, 'CT')
             _, _, _, _, vz_ord, va_ord, vs_ord, V_Z, V_A, V_S = compute_errors(model, train_loader, 'ROT', True)
             ROT_Z, ROT_A, ROT_S = compute_errors(model, valid_loader, 'ROT', False, V_Z, V_A, V_S)
         # SAVE BEST MODELS
         if SMB_Z <= Best_SMB_Z: Best_SMB_Z, Best_SMB_Z_ep = SMB_Z, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-SMB-Z.pt'))
         if SMB_A <= Best_SMB_A: Best_SMB_A, Best_SMB_A_ep = SMB_A, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-SMB-A.pt'))
         if SMB_S <= Best_SMB_S: Best_SMB_S, Best_SMB_S_ep = SMB_S, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-SMB-S.pt'))
-        if CT_Z <= Best_CT_Z: Best_CT_Z, Best_CT_Z_ep = CT_Z, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-CT-Z.pt'))
-        if CT_A <= Best_CT_A: Best_CT_A, Best_CT_A_ep = CT_A, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-CT-A.pt'))
-        if CT_S <= Best_CT_S: Best_CT_S, Best_CT_S_ep = CT_S, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-CT-S.pt'))
+        if CT_Z  <= Best_CT_Z:  Best_CT_Z,  Best_CT_Z_ep  = CT_Z,  epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-CT-Z.pt'))
+        if CT_A  <= Best_CT_A:  Best_CT_A,  Best_CT_A_ep  = CT_A,  epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-CT-A.pt'))
+        if CT_S  <= Best_CT_S:  Best_CT_S,  Best_CT_S_ep  = CT_S,  epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-CT-S.pt'))
         if ROT_Z <= Best_ROT_Z: Best_ROT_Z, Best_ROT_Z_ep = ROT_Z, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-ROT-Z.pt'))
         if ROT_A <= Best_ROT_A: Best_ROT_A, Best_ROT_A_ep = ROT_A, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-ROT-A.pt'))
         if ROT_S <= Best_ROT_S: Best_ROT_S, Best_ROT_S_ep = ROT_S, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-ROT-S.pt'))
@@ -357,7 +360,7 @@ for RANDOM_SEED in range(20):
         s = 'MZE/MAE/RMSE | Current : %.4f/%.4f/%.4f/%.4f/%.4f/%.4f/%.4f/%.4f/%.4f Ep. %d Ord. %d/%d/%d/%d | Best-SMB : %.4f/%.4f/%.4f Ep. %d/%d/%d | Best-CT : %.4f/%.4f/%.4f Ep. %d/%d/%d | Best-ROT : %.4f/%.4f/%.4f Ep. %d/%d/%d' % ( 
             SMB_Z, SMB_A, SMB_S, CT_Z, CT_A, CT_S, ROT_Z, ROT_A, ROT_S, epoch, b_ord, vz_ord, va_ord, vs_ord,
             Best_SMB_Z, Best_SMB_A, Best_SMB_S, Best_SMB_Z_ep, Best_SMB_A_ep, Best_SMB_S_ep,
-            Best_CT_Z, Best_CT_A, Best_CT_S, Best_CT_Z_ep, Best_CT_A_ep, Best_CT_S_ep,
+            Best_CT_Z,  Best_CT_A,  Best_CT_S,  Best_CT_Z_ep,  Best_CT_A_ep,  Best_CT_S_ep,
             Best_ROT_Z, Best_ROT_A, Best_ROT_S, Best_ROT_Z_ep, Best_ROT_A_ep, Best_ROT_S_ep)
         print(s)
         with open(LOGFILE, 'a') as f: f.write('%s\n' % s)

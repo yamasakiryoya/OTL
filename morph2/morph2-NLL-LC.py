@@ -1,12 +1,11 @@
 ##############################
 # coding: utf-8
-# use like > python morph2-NLL.py --cuda 0
+# use like > python morph2-NLL-LC.py --cuda 0
 ##############################
 # Imports
 ##############################
 import os
-import time
-from math import fabs
+#import time
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -26,7 +25,7 @@ VALID_CSV_PATH = './morph2_valid.csv'
 IMAGE_PATH = '../datasets/morph2-aligned'
 
 
-for RANDOM_SEED in range(20):
+for RANDOM_SEED in [0]:
     ##############################
     # Args
     ##############################
@@ -39,19 +38,9 @@ for RANDOM_SEED in range(20):
     if args.cuda >= 0: DEVICE = torch.device("cuda:%d" % args.cuda)
     else: DEVICE = torch.device("cpu")
     NUM_WORKERS = args.numworkers
-    PATH = "threshold/NLL/seed"+str(RANDOM_SEED)
+    PATH = "threshold/NLL-LC"
     if not os.path.exists(PATH): os.makedirs(PATH)
     LOGFILE = os.path.join(PATH, 'training.log')
-    header = []
-    header.append('PyTorch Version: %s' % torch.__version__)
-    header.append('Random Seed: %s' % RANDOM_SEED)
-    header.append('Output Path: %s' % PATH)
-    header.append('Script: %s' % sys.argv[0])
-    with open(LOGFILE, 'w') as f:
-        for entry in header:
-            print(entry)
-            f.write('%s\n' % entry)
-            f.flush()
 
 
     ##############################
@@ -224,7 +213,7 @@ for RANDOM_SEED in range(20):
             L_A = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
             for j in range(NUM_CLASSES):
                 for k in range(NUM_CLASSES):
-                    L_A[j,k] = fabs(j-k)
+                    L_A[j,k] = abs(j-k)
             L_S = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
             for j in range(NUM_CLASSES):
                 for k in range(NUM_CLASSES):
@@ -298,9 +287,9 @@ for RANDOM_SEED in range(20):
             #
             predicts_S = torch.sum(allg-V_S > 0., 1)
             MSE = torch.sum((predicts_S - ally)**2)
-        MZE  = MZE.float() / num_examples
-        MAE  = MAE.float() / num_examples
-        MSE  = MSE.float() / num_examples
+        MZE = MZE.float() / num_examples
+        MAE = MAE.float() / num_examples
+        MSE = MSE.float() / num_examples
         if labeling=='SMB':
             return MZE, MAE, torch.sqrt(MSE)
         if labeling=='CT':
@@ -314,12 +303,6 @@ for RANDOM_SEED in range(20):
     ##############################
     # Validation Phase
     ##############################
-    start_time = time.time()
-
-    Best_SMB_Z, Best_SMB_A, Best_SMB_S = 10.**8, 10.**8, 10.**8
-    Best_CT_Z, Best_CT_A, Best_CT_S = 10.**8, 10.**8, 10.**8
-    Best_ROT_Z, Best_ROT_A, Best_ROT_S = 10.**8, 10.**8, 10.**8
-
     for epoch in range(NUM_EPOCHS):
         # TRAINING
         model.train()
@@ -331,85 +314,26 @@ for RANDOM_SEED in range(20):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            # LOGGING
-            if not batch_idx % 50:
-                s = ('Epoch: %03d/%03d | Batch %04d/%04d | Loss: %.4f' % (epoch+1, NUM_EPOCHS, batch_idx, len(train_dataset)//BATCH_SIZE, loss))
-                print(s)
-                with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
         # EVALUATION
         model.eval()
         with torch.set_grad_enabled(False):
-            SMB_Z, SMB_A, SMB_S = compute_errors(model, valid_loader, 'SMB')
-            CT_Z, CT_A, CT_S, b_ord = compute_errors(model, valid_loader, 'CT')
+            tra_SMB_Z, tra_SMB_A, tra_SMB_S = compute_errors(model, train_loader, 'SMB')
+            tra_CT_Z, tra_CT_A, tra_CT_S, b_ord = compute_errors(model, train_loader, 'CT')
             _, _, _, _, vz_ord, va_ord, vs_ord, V_Z, V_A, V_S = compute_errors(model, train_loader, 'ROT', True)
-            ROT_Z, ROT_A, ROT_S = compute_errors(model, valid_loader, 'ROT', False, V_Z, V_A, V_S)
-        # SAVE BEST MODELS
-        if SMB_Z <= Best_SMB_Z: Best_SMB_Z, Best_SMB_Z_ep = SMB_Z, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-SMB-Z.pt'))
-        if SMB_A <= Best_SMB_A: Best_SMB_A, Best_SMB_A_ep = SMB_A, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-SMB-A.pt'))
-        if SMB_S <= Best_SMB_S: Best_SMB_S, Best_SMB_S_ep = SMB_S, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-SMB-S.pt'))
-        if CT_Z <= Best_CT_Z: Best_CT_Z, Best_CT_Z_ep = CT_Z, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-CT-Z.pt'))
-        if CT_A <= Best_CT_A: Best_CT_A, Best_CT_A_ep = CT_A, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-CT-A.pt'))
-        if CT_S <= Best_CT_S: Best_CT_S, Best_CT_S_ep = CT_S, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-CT-S.pt'))
-        if ROT_Z <= Best_ROT_Z: Best_ROT_Z, Best_ROT_Z_ep = ROT_Z, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-ROT-Z.pt'))
-        if ROT_A <= Best_ROT_A: Best_ROT_A, Best_ROT_A_ep = ROT_A, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-ROT-A.pt'))
-        if ROT_S <= Best_ROT_S: Best_ROT_S, Best_ROT_S_ep = ROT_S, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-ROT-S.pt'))
+            tra_ROT_Z, tra_ROT_A, tra_ROT_S = compute_errors(model, train_loader, 'ROT', False, V_Z, V_A, V_S)
+            #
+            val_SMB_Z, val_SMB_A, val_SMB_S = compute_errors(model, valid_loader, 'SMB')
+            val_CT_Z, val_CT_A, val_CT_S, _ = compute_errors(model, valid_loader, 'CT')
+            val_ROT_Z, val_ROT_A, val_ROT_S = compute_errors(model, valid_loader, 'ROT', False, V_Z, V_A, V_S)
+            #
+            tes_SMB_Z, tes_SMB_A, tes_SMB_S = compute_errors(model, test_loader, 'SMB')
+            tes_CT_Z, tes_CT_A, tes_CT_S, _ = compute_errors(model, test_loader, 'CT')
+            tes_ROT_Z, tes_ROT_A, tes_ROT_S = compute_errors(model, test_loader, 'ROT', False, V_Z, V_A, V_S)
         # SAVE CURRENT/BEST ERRORS/TIME
-        s = 'MZE/MAE/RMSE | Current : %.4f/%.4f/%.4f/%.4f/%.4f/%.4f/%.4f/%.4f/%.4f Ep. %d Ord. %d/%d/%d/%d | Best-SMB : %.4f/%.4f/%.4f Ep. %d/%d/%d | Best-CT : %.4f/%.4f/%.4f Ep. %d/%d/%d | Best-ROT : %.4f/%.4f/%.4f Ep. %d/%d/%d' % ( 
-            SMB_Z, SMB_A, SMB_S, CT_Z, CT_A, CT_S, ROT_Z, ROT_A, ROT_S, epoch, b_ord, vz_ord, va_ord, vs_ord,
-            Best_SMB_Z, Best_SMB_A, Best_SMB_S, Best_SMB_Z_ep, Best_SMB_A_ep, Best_SMB_S_ep,
-            Best_CT_Z, Best_CT_A, Best_CT_S, Best_CT_Z_ep, Best_CT_A_ep, Best_CT_S_ep,
-            Best_ROT_Z, Best_ROT_A, Best_ROT_S, Best_ROT_Z_ep, Best_ROT_A_ep, Best_ROT_S_ep)
+        s = '%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d,%d,%d,%d' % ( 
+            tra_SMB_Z, tra_SMB_A, tra_SMB_S, tra_CT_Z, tra_CT_A, tra_CT_S, tra_ROT_Z, tra_ROT_A, tra_ROT_S, 
+            val_SMB_Z, val_SMB_A, val_SMB_S, val_CT_Z, val_CT_A, val_CT_S, val_ROT_Z, val_ROT_A, val_ROT_S, 
+            tes_SMB_Z, tes_SMB_A, tes_SMB_S, tes_CT_Z, tes_CT_A, tes_CT_S, tes_ROT_Z, tes_ROT_A, tes_ROT_S, 
+            b_ord, vz_ord, va_ord, vs_ord)
         print(s)
         with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
-        #
-        s = 'Time elapsed: %.4f min' % ((time.time() - start_time)/60)
-        print(s)
-        with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
-
-    ##############################
-    # Test Phase
-    ##############################
-    for labeling in ['SMB', 'CT', 'ROT']:
-        for task in ['Z', 'A', 'S']:
-            # SAVE BEST ERRORS
-            model.load_state_dict(torch.load(os.path.join(PATH, 'Best-%s-%s.pt'%(labeling, task))))
-            model.eval()
-            with torch.set_grad_enabled(False):
-                if labeling=='SMB':
-                    tr_MZE, tr_MAE, tr_MSE = compute_errors(model, train_loader, labeling)
-                    va_MZE, va_MAE, va_MSE = compute_errors(model, valid_loader, labeling)
-                    te_MZE, te_MAE, te_MSE = compute_errors(model, test_loader,  labeling)
-                    #
-                    s = 'Best-%s-%s MZE/MAE/RMSE | Train: %.4f/%.4f/%.4f | Valid: %.4f/%.4f/%.4f | Test: %.4f/%.4f/%.4f' % (
-                        labeling, task, tr_MZE, tr_MAE, tr_MSE, va_MZE, va_MAE, va_MSE, te_MZE, te_MAE, te_MSE)
-                    print(s)
-                    with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
-                if labeling=='CT':
-                    tr_MZE, tr_MAE, tr_MSE, b_ord = compute_errors(model, train_loader, labeling)
-                    va_MZE, va_MAE, va_MSE, _ = compute_errors(model, valid_loader, labeling)
-                    te_MZE, te_MAE, te_MSE, _ = compute_errors(model, test_loader,  labeling)
-                    #
-                    s = 'Best-%s-%s MZE/MAE/RMSE | Train: %.4f/%.4f/%.4f | Valid: %.4f/%.4f/%.4f | Test: %.4f/%.4f/%.4f, Order | b: %d' % (
-                        labeling, task, tr_MZE, tr_MAE, tr_MSE, va_MZE, va_MAE, va_MSE, te_MZE, te_MAE, te_MSE, b_ord)
-                    print(s)
-                    with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
-                if labeling=='ROT':
-                    tr_MZE, tr_MAE, tr_MSE, b_ord, vz_ord, va_ord, vs_ord, V_Z, V_A, V_S = compute_errors(model, train_loader, labeling, True)
-                    va_MZE, va_MAE, va_MSE = compute_errors(model, valid_loader, labeling, False, V_Z, V_A, V_S)
-                    te_MZE, te_MAE, te_MSE = compute_errors(model, test_loader,  labeling, False, V_Z, V_A, V_S)
-                    #
-                    s = 'Best-%s-%s MZE/MAE/RMSE | Train: %.4f/%.4f/%.4f | Valid: %.4f/%.4f/%.4f | Test: %.4f/%.4f/%.4f, Order | b&v: %d/%d/%d/%d' % (
-                        labeling, task, tr_MZE, tr_MAE, tr_MSE, va_MZE, va_MAE, va_MSE, te_MZE, te_MAE, te_MSE, b_ord, vz_ord, va_ord, vs_ord)
-                    print(s)
-                    with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
-
-    os.remove(os.path.join(PATH, 'Best-SMB-Z.pt'))
-    os.remove(os.path.join(PATH, 'Best-SMB-A.pt'))
-    os.remove(os.path.join(PATH, 'Best-SMB-S.pt'))
-    os.remove(os.path.join(PATH, 'Best-CT-Z.pt'))
-    os.remove(os.path.join(PATH, 'Best-CT-A.pt'))
-    os.remove(os.path.join(PATH, 'Best-CT-S.pt'))
-    os.remove(os.path.join(PATH, 'Best-ROT-Z.pt'))
-    os.remove(os.path.join(PATH, 'Best-ROT-A.pt'))
-    os.remove(os.path.join(PATH, 'Best-ROT-S.pt'))
-

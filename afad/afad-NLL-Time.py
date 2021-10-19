@@ -1,12 +1,11 @@
 ##############################
 # coding: utf-8
-# use like > nohup python cacd-Time.py --cuda 0 &
+# use like > python afad-NLL-Time.py --cuda 0
 ##############################
 # Imports
 ##############################
 import os
 import time
-from math import fabs
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -20,10 +19,10 @@ from PIL import Image
 
 torch.backends.cudnn.deterministic = True
 
-TRAIN_CSV_PATH = './cacd_train.csv'
-TEST_CSV_PATH  = './cacd_test.csv'
-VALID_CSV_PATH = './cacd_valid.csv'
-IMAGE_PATH = '../datasets/CACD2000-centered'
+TRAIN_CSV_PATH = './afad_train.csv'
+TEST_CSV_PATH  = './afad_test.csv'
+VALID_CSV_PATH = './afad_valid.csv'
+IMAGE_PATH = '../datasets/tarball/AFAD-Full'
 
 
 for RANDOM_SEED in [0]:
@@ -39,7 +38,7 @@ for RANDOM_SEED in [0]:
     if args.cuda >= 0: DEVICE = torch.device("cuda:%d" % args.cuda)
     else: DEVICE = torch.device("cpu")
     NUM_WORKERS = args.numworkers
-    PATH = "threshold/Time"
+    PATH = "threshold/NLL-Time"
     if not os.path.exists(PATH): os.makedirs(PATH)
     LOGFILE = os.path.join(PATH, 'training.log')
     header = []
@@ -62,7 +61,7 @@ for RANDOM_SEED in [0]:
     NUM_EPOCHS = 100
 
     # Architecture
-    NUM_CLASSES = 49
+    NUM_CLASSES = 26
     BATCH_SIZE = 256
     GRAYSCALE = False
 
@@ -70,18 +69,18 @@ for RANDOM_SEED in [0]:
     ##############################
     # Dataset
     ##############################
-    class CACD_Dataset(Dataset):
-        """Custom Dataset for loading CACD face images"""
+    class AFAD_Dataset(Dataset):
+        """Custom Dataset for loading AFAD face images"""
         def __init__(self, csv_path, img_dir, transform=None):
             df = pd.read_csv(csv_path, index_col=0)
             self.img_dir = img_dir
             self.csv_path = csv_path
-            self.img_names = df['file'].values
+            self.img_paths = df['path'].values
             self.y = df['age'].values
             self.transform = transform
 
         def __getitem__(self, index):
-            img = Image.open(os.path.join(self.img_dir, self.img_names[index]))
+            img = Image.open(os.path.join(self.img_dir, self.img_paths[index]))
             if self.transform is not None:
                 img = self.transform(img)
             label = int(self.y[index])
@@ -92,9 +91,9 @@ for RANDOM_SEED in [0]:
 
     custom_transform  = transforms.Compose([transforms.Resize((128, 128)), transforms.RandomCrop((120, 120)), transforms.ToTensor()])
     custom_transform2 = transforms.Compose([transforms.Resize((128, 128)), transforms.CenterCrop((120, 120)), transforms.ToTensor()])
-    train_dataset = CACD_Dataset(csv_path=TRAIN_CSV_PATH, img_dir=IMAGE_PATH, transform=custom_transform)
-    valid_dataset = CACD_Dataset(csv_path=VALID_CSV_PATH, img_dir=IMAGE_PATH, transform=custom_transform2)
-    test_dataset  = CACD_Dataset(csv_path=TEST_CSV_PATH,  img_dir=IMAGE_PATH, transform=custom_transform2)
+    train_dataset = AFAD_Dataset(csv_path=TRAIN_CSV_PATH, img_dir=IMAGE_PATH, transform=custom_transform)
+    valid_dataset = AFAD_Dataset(csv_path=VALID_CSV_PATH, img_dir=IMAGE_PATH, transform=custom_transform2)
+    test_dataset  = AFAD_Dataset(csv_path=TEST_CSV_PATH,  img_dir=IMAGE_PATH, transform=custom_transform2)
     train_loader  = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True,  num_workers=NUM_WORKERS)
     valid_loader  = DataLoader(dataset=valid_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
     test_loader   = DataLoader(dataset=test_dataset,  batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
@@ -149,7 +148,7 @@ for RANDOM_SEED in [0]:
             self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
             self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
             self.avgpool = nn.AvgPool2d(4)
-            self.fc = nn.Linear(512, 1, bias=False)
+            self.fc = nn.Linear(512, 1)
             self.b0 = nn.Parameter(torch.tensor([0.]), requires_grad=False)
             self.bi = nn.Parameter(torch.arange(1,self.num_classes-1).float())
 
@@ -220,7 +219,7 @@ for RANDOM_SEED in [0]:
             L_A = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
             for j in range(NUM_CLASSES):
                 for k in range(NUM_CLASSES):
-                    L_A[j,k] = fabs(j-k)
+                    L_A[j,k] = abs(j-k)
         if labeling=='ROT' and train==True:
             allg = torch.tensor([], dtype=torch.float).to(DEVICE)
             ally = torch.tensor([], dtype=torch.long).to(DEVICE)

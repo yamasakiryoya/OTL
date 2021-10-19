@@ -1,6 +1,6 @@
 ##############################
 # coding: utf-8
-# use like > nohup python morph2-ANLCL.py --cuda 0 &
+# use like > python morph2-ANLCL.py --cuda 0
 ##############################
 # Imports
 ##############################
@@ -26,7 +26,7 @@ VALID_CSV_PATH = './morph2_valid.csv'
 IMAGE_PATH = '../datasets/morph2-aligned'
 
 
-for RANDOM_SEED in range(30):
+for RANDOM_SEED in range(20):
     ##############################
     # Args
     ##############################
@@ -151,7 +151,7 @@ for RANDOM_SEED in range(30):
             self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
             self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
             self.avgpool = nn.AvgPool2d(4)
-            self.fc = nn.Linear(512, 1, bias=False)
+            self.fc = nn.Linear(512, 1)
             self.b0 = nn.Parameter(torch.tensor([0.]), requires_grad=False)
             self.bi = nn.Parameter(torch.arange(1,self.num_classes-1).float())
 

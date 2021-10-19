@@ -1,12 +1,11 @@
 ##############################
 # coding: utf-8
-# use like > nohup python afad-SVOR.py --cuda 0 &
+# use like > python afad-SVOR.py --cuda 0
 ##############################
 # Imports
 ##############################
 import os
 import time
-from math import fabs
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -26,7 +25,7 @@ VALID_CSV_PATH = './afad_valid.csv'
 IMAGE_PATH = '../datasets/tarball/AFAD-Full'
 
 
-for RANDOM_SEED in range(30):
+for RANDOM_SEED in range(20):
     ##############################
     # Args
     ##############################
@@ -149,7 +148,7 @@ for RANDOM_SEED in range(30):
             self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
             self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
             self.avgpool = nn.AvgPool2d(4)
-            self.fc = nn.Linear(512, 1, bias=False)
+            self.fc = nn.Linear(512, 1)
             self.b0 = nn.Parameter(torch.tensor([0.]), requires_grad=False)
             self.bi = nn.Parameter(torch.arange(1,self.num_classes-1).float())
 
@@ -224,7 +223,7 @@ for RANDOM_SEED in range(30):
             L_A = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
             for j in range(NUM_CLASSES):
                 for k in range(NUM_CLASSES):
-                    L_A[j,k] = fabs(j-k)
+                    L_A[j,k] = abs(j-k)
             L_S = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
             for j in range(NUM_CLASSES):
                 for k in range(NUM_CLASSES):

@@ -1,12 +1,11 @@
 ##############################
 # coding: utf-8
-# use like > python morph2-NLL.py --cuda 0
+# use like > python morph2-ordered-NLL.py --cuda 0
 ##############################
 # Imports
 ##############################
 import os
 import time
-from math import fabs
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -39,7 +38,7 @@ for RANDOM_SEED in range(20):
     if args.cuda >= 0: DEVICE = torch.device("cuda:%d" % args.cuda)
     else: DEVICE = torch.device("cpu")
     NUM_WORKERS = args.numworkers
-    PATH = "threshold/NLL/seed"+str(RANDOM_SEED)
+    PATH = "threshold/ordered-NLL/seed"+str(RANDOM_SEED)
     if not os.path.exists(PATH): os.makedirs(PATH)
     LOGFILE = os.path.join(PATH, 'training.log')
     header = []
@@ -150,8 +149,7 @@ for RANDOM_SEED in range(20):
             self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
             self.avgpool = nn.AvgPool2d(4)
             self.fc = nn.Linear(512, 1)
-            self.b0 = nn.Parameter(torch.tensor([0.]), requires_grad=False)
-            self.bi = nn.Parameter(torch.arange(1,self.num_classes-1).float())
+            self.bi = nn.Parameter(torch.ones(self.num_classes-2).float())
 
             for m in self.modules():
                 if isinstance(m, nn.Conv2d):
@@ -189,9 +187,13 @@ for RANDOM_SEED in range(20):
             #
             x = x.view(x.size(0), -1)
             #
+            tmp = torch.zeros(self.num_classes-1).float().to(DEVICE)
+            for k in range(1, self.num_classes-1):
+                tmp[k] = tmp[k-1] + self.bi[k-1]**2
+            #
             fc = self.fc(x)
-            probas = torch.sigmoid(fc - torch.cat((self.b0,self.bi)))
-            return fc, torch.cat((self.b0,self.bi)), probas
+            probas = torch.sigmoid(fc - tmp)
+            return fc, tmp, probas
 
     def resnet(num_classes, grayscale):
         """Constructs a ResNet-34 model."""
@@ -224,7 +226,7 @@ for RANDOM_SEED in range(20):
             L_A = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
             for j in range(NUM_CLASSES):
                 for k in range(NUM_CLASSES):
-                    L_A[j,k] = fabs(j-k)
+                    L_A[j,k] = abs(j-k)
             L_S = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
             for j in range(NUM_CLASSES):
                 for k in range(NUM_CLASSES):
@@ -298,9 +300,9 @@ for RANDOM_SEED in range(20):
             #
             predicts_S = torch.sum(allg-V_S > 0., 1)
             MSE = torch.sum((predicts_S - ally)**2)
-        MZE  = MZE.float() / num_examples
-        MAE  = MAE.float() / num_examples
-        MSE  = MSE.float() / num_examples
+        MZE = MZE.float() / num_examples
+        MAE = MAE.float() / num_examples
+        MSE = MSE.float() / num_examples
         if labeling=='SMB':
             return MZE, MAE, torch.sqrt(MSE)
         if labeling=='CT':
@@ -317,7 +319,7 @@ for RANDOM_SEED in range(20):
     start_time = time.time()
 
     Best_SMB_Z, Best_SMB_A, Best_SMB_S = 10.**8, 10.**8, 10.**8
-    Best_CT_Z, Best_CT_A, Best_CT_S = 10.**8, 10.**8, 10.**8
+    Best_CT_Z,  Best_CT_A,  Best_CT_S  = 10.**8, 10.**8, 10.**8
     Best_ROT_Z, Best_ROT_A, Best_ROT_S = 10.**8, 10.**8, 10.**8
 
     for epoch in range(NUM_EPOCHS):
@@ -347,9 +349,9 @@ for RANDOM_SEED in range(20):
         if SMB_Z <= Best_SMB_Z: Best_SMB_Z, Best_SMB_Z_ep = SMB_Z, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-SMB-Z.pt'))
         if SMB_A <= Best_SMB_A: Best_SMB_A, Best_SMB_A_ep = SMB_A, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-SMB-A.pt'))
         if SMB_S <= Best_SMB_S: Best_SMB_S, Best_SMB_S_ep = SMB_S, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-SMB-S.pt'))
-        if CT_Z <= Best_CT_Z: Best_CT_Z, Best_CT_Z_ep = CT_Z, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-CT-Z.pt'))
-        if CT_A <= Best_CT_A: Best_CT_A, Best_CT_A_ep = CT_A, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-CT-A.pt'))
-        if CT_S <= Best_CT_S: Best_CT_S, Best_CT_S_ep = CT_S, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-CT-S.pt'))
+        if CT_Z  <= Best_CT_Z:  Best_CT_Z,  Best_CT_Z_ep  = CT_Z,  epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-CT-Z.pt'))
+        if CT_A  <= Best_CT_A:  Best_CT_A,  Best_CT_A_ep  = CT_A,  epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-CT-A.pt'))
+        if CT_S  <= Best_CT_S:  Best_CT_S,  Best_CT_S_ep  = CT_S,  epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-CT-S.pt'))
         if ROT_Z <= Best_ROT_Z: Best_ROT_Z, Best_ROT_Z_ep = ROT_Z, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-ROT-Z.pt'))
         if ROT_A <= Best_ROT_A: Best_ROT_A, Best_ROT_A_ep = ROT_A, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-ROT-A.pt'))
         if ROT_S <= Best_ROT_S: Best_ROT_S, Best_ROT_S_ep = ROT_S, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-ROT-S.pt'))
@@ -357,7 +359,7 @@ for RANDOM_SEED in range(20):
         s = 'MZE/MAE/RMSE | Current : %.4f/%.4f/%.4f/%.4f/%.4f/%.4f/%.4f/%.4f/%.4f Ep. %d Ord. %d/%d/%d/%d | Best-SMB : %.4f/%.4f/%.4f Ep. %d/%d/%d | Best-CT : %.4f/%.4f/%.4f Ep. %d/%d/%d | Best-ROT : %.4f/%.4f/%.4f Ep. %d/%d/%d' % ( 
             SMB_Z, SMB_A, SMB_S, CT_Z, CT_A, CT_S, ROT_Z, ROT_A, ROT_S, epoch, b_ord, vz_ord, va_ord, vs_ord,
             Best_SMB_Z, Best_SMB_A, Best_SMB_S, Best_SMB_Z_ep, Best_SMB_A_ep, Best_SMB_S_ep,
-            Best_CT_Z, Best_CT_A, Best_CT_S, Best_CT_Z_ep, Best_CT_A_ep, Best_CT_S_ep,
+            Best_CT_Z,  Best_CT_A,  Best_CT_S,  Best_CT_Z_ep,  Best_CT_A_ep,  Best_CT_S_ep,
             Best_ROT_Z, Best_ROT_A, Best_ROT_S, Best_ROT_Z_ep, Best_ROT_A_ep, Best_ROT_S_ep)
         print(s)
         with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
