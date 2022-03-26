@@ -1,11 +1,11 @@
 ##############################
 # coding: utf-8
-# use like > python morph2-NLL-LC.py --cuda 0
+# use like > nohup python morph2-ANLCL-Time.py --cuda 0 &
 ##############################
 # Imports
 ##############################
 import os
-#import time
+import time
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -38,9 +38,19 @@ for RANDOM_SEED in [0]:
     if args.cuda >= 0: DEVICE = torch.device("cuda:%d" % args.cuda)
     else: DEVICE = torch.device("cpu")
     NUM_WORKERS = args.numworkers
-    PATH = "threshold/NLL-LC"
+    PATH = "MTM/Time"
     if not os.path.exists(PATH): os.makedirs(PATH)
     LOGFILE = os.path.join(PATH, 'training.log')
+    header = []
+    header.append('PyTorch Version: %s' % torch.__version__)
+    header.append('Random Seed: %s' % RANDOM_SEED)
+    header.append('Output Path: %s' % PATH)
+    header.append('Script: %s' % sys.argv[0])
+    with open(LOGFILE, 'w') as f:
+        for entry in header:
+            print(entry)
+            f.write('%s\n' % entry)
+            f.flush()
 
 
     ##############################
@@ -48,7 +58,7 @@ for RANDOM_SEED in [0]:
     ##############################
     # Hyperparameters
     learning_rate = 0.001
-    NUM_EPOCHS = 100
+    NUM_EPOCHS = 200
 
     # Architecture
     NUM_CLASSES = 55
@@ -74,7 +84,9 @@ for RANDOM_SEED in [0]:
             if self.transform is not None:
                 img = self.transform(img)
             label = int(self.y[index])
-            return img, label
+            levels = [1]*label + [0]*(NUM_CLASSES - 1 - label)
+            levels = torch.tensor(levels, dtype=torch.float32)
+            return img, label, levels
 
         def __len__(self):
             return self.y.shape[0]
@@ -139,8 +151,7 @@ for RANDOM_SEED in [0]:
             self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
             self.avgpool = nn.AvgPool2d(4)
             self.fc = nn.Linear(512, 1)
-            self.b0 = nn.Parameter(torch.tensor([0.]), requires_grad=False)
-            self.bi = nn.Parameter(torch.arange(1,self.num_classes-1).float())
+            self.bi = nn.Parameter(torch.arange(self.num_classes-1).float())
 
             for m in self.modules():
                 if isinstance(m, nn.Conv2d):
@@ -179,8 +190,7 @@ for RANDOM_SEED in [0]:
             x = x.view(x.size(0), -1)
             #
             fc = self.fc(x)
-            probas = torch.sigmoid(fc - torch.cat((self.b0,self.bi)))
-            return fc, torch.cat((self.b0,self.bi)), probas
+            return fc, self.bi
 
     def resnet(num_classes, grayscale):
         """Constructs a ResNet-34 model."""
@@ -191,11 +201,9 @@ for RANDOM_SEED in [0]:
     ##############################
     # Settings
     ##############################
-    def loss_fn(g, b, targets):
-        tmpb = torch.cat((torch.tensor([-10.**8]).to(DEVICE), b, torch.tensor([10.**8]).to(DEVICE))).reshape(-1,1)
-        tmpr = torch.sigmoid(tmpb[targets+1]-g)
-        tmpl = torch.sigmoid(tmpb[targets]-g)
-        return torch.mean(-torch.log(tmpr-tmpl+.1**8))
+    def loss_fn(logits, levels):
+        val = (-torch.sum((F.logsigmoid(logits)*levels + (F.logsigmoid(logits) - logits)*(1-levels)), dim=1))
+        return torch.mean(val)
 
     torch.manual_seed(RANDOM_SEED)
     torch.cuda.manual_seed(RANDOM_SEED)
@@ -203,67 +211,45 @@ for RANDOM_SEED in [0]:
     model.to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    def compute_errors(model, data_loader, labeling, train=None, V_Z=None, V_A=None, V_S=None):
-        MZE, MAE, MSE, num_examples = 0., 0., 0., 0
-        if labeling=='SMB' or (labeling=='ROT' and train==True):
-            L_Z = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
-            for j in range(NUM_CLASSES):
-                for k in range(NUM_CLASSES):
-                    if j!=k: L_Z[j,k] = 1.
+    def compute_errors(model, data_loader, labeling, train=None, V_A=None):
+        restime, MAE, num_examples = 0., 0., 0
+        if labeling=='LB' or (labeling=='IOT' and train==True):
             L_A = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
             for j in range(NUM_CLASSES):
                 for k in range(NUM_CLASSES):
                     L_A[j,k] = abs(j-k)
-            L_S = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
-            for j in range(NUM_CLASSES):
-                for k in range(NUM_CLASSES):
-                    L_S[j,k] = (j-k)**2
-        if labeling=='ROT' and train==True:
+        if labeling=='IOT' and train==True:
             allg = torch.tensor([], dtype=torch.float).to(DEVICE)
             ally = torch.tensor([], dtype=torch.long).to(DEVICE)
-        for i, (features, targets) in enumerate(data_loader):
-            features, targets = features.to(DEVICE), targets.to(DEVICE)
-            g, b, probas = model(features)
+        for i, (features, targets, levels) in enumerate(data_loader):
+            features, targets, levels = features.to(DEVICE), targets.to(DEVICE), levels.to(DEVICE)
+            g, b = model(features)
             num_examples += targets.size(0)
             #
-            if labeling=='SMB':
+            if labeling=='LB':
+                probas = torch.sigmoid(g-b)
                 Mprobas = torch.cat([torch.ones(probas.size(0), 1).to(DEVICE), probas], 1) - torch.cat([probas, torch.zeros(probas.size(0), 1).to(DEVICE)], 1)
-                predicts_Z = torch.argmin(torch.mm(Mprobas, L_Z), 1)
-                MZE += torch.sum(predicts_Z != targets)
-                #
                 predicts_A = torch.argmin(torch.mm(Mprobas, L_A), 1)
                 MAE += torch.sum(torch.abs(predicts_A - targets))
-                #
-                predicts_S = torch.argmin(torch.mm(Mprobas, L_S), 1)
-                MSE += torch.sum((predicts_S - targets)**2)
-            if labeling=='CT':
-                predicts = torch.sum(g-b > 0., 1)
-                #
-                MZE += torch.sum(predicts != targets)
+            if labeling=='MT':
+                tmp = torch.zeros(g.shape[0],NUM_CLASSES-1).to(DEVICE)
+                tmp[g-b>=0.] = 1.
+                tmp = torch.cat([tmp, torch.zeros(g.shape[0],1).to(DEVICE)], 1)
+                predicts = torch.argmin(tmp, 1)
                 MAE += torch.sum(torch.abs(predicts - targets))
-                MSE += torch.sum((predicts - targets)**2)
-            if labeling=='ROT' and train==True:
+            if labeling=='ST':
+                predicts = torch.sum(g-b>=0., 1)
+                MAE += torch.sum(torch.abs(predicts - targets))
+            if labeling=='IOT' and train==True:
                 allg = torch.cat((allg, g))
                 ally = torch.cat((ally, targets))
-            if labeling=='ROT' and train==False:
-                predicts_Z = torch.sum(g-V_Z > 0., 1)
-                MZE += torch.sum(predicts_Z != targets)
-                #
-                predicts_A = torch.sum(g-V_A > 0., 1)
+            if labeling=='IOT' and train==False:
+                predicts_A = torch.sum(g-V_A>=0., 1)
                 MAE += torch.sum(torch.abs(predicts_A - targets))
-                #
-                predicts_S = torch.sum(g-V_S > 0., 1)
-                MSE += torch.sum((predicts_S - targets)**2)
-        if labeling=='ROT' and train==True:
+        if labeling=='IOT' and train==True:
+            restime -= time.time()
             allg, indeces = torch.sort(allg,0)
             ally = ally[indeces.reshape(-1)]
-            #
-            M_Z = torch.zeros(NUM_CLASSES-1, num_examples+1, dtype=torch.float).to(DEVICE)
-            for i in range(num_examples):
-                M_Z[:,i+1] = M_Z[:,i] + L_Z[:-1,ally[i]] - L_Z[1:,ally[i]]
-            tmp1 = torch.argmin(M_Z, 1)-1; tmp1[tmp1<0] = 0
-            tmp2 = torch.argmin(M_Z, 1);   tmp2[tmp2==num_examples] = num_examples-1
-            V_Z = (allg[tmp1,0] + allg[tmp2,0])/2.
             #
             M_A = torch.zeros(NUM_CLASSES-1, num_examples+1, dtype=torch.float).to(DEVICE)
             for i in range(num_examples):
@@ -271,69 +257,94 @@ for RANDOM_SEED in [0]:
             tmp1 = torch.argmin(M_A, 1)-1; tmp1[tmp1<0] = 0
             tmp2 = torch.argmin(M_A, 1);   tmp2[tmp2==num_examples] = num_examples-1
             V_A = (allg[tmp1,0] + allg[tmp2,0])/2.
-            #
-            M_S = torch.zeros(NUM_CLASSES-1, num_examples+1, dtype=torch.float).to(DEVICE)
-            for i in range(num_examples):
-                M_S[:,i+1] = M_S[:,i] + L_S[:-1,ally[i]] - L_S[1:,ally[i]]
-            tmp1 = torch.argmin(M_S, 1)-1; tmp1[tmp1<0] = 0
-            tmp2 = torch.argmin(M_S, 1);   tmp2[tmp2==num_examples] = num_examples-1
-            V_S = (allg[tmp1,0] + allg[tmp2,0])/2.
-            #
-            predicts_Z = torch.sum(allg-V_Z > 0., 1)
-            MZE = torch.sum(predicts_Z != ally)
-            #
-            predicts_A = torch.sum(allg-V_A > 0., 1)
+            restime += time.time()
+            predicts_A = torch.sum(allg-V_A>=0., 1)
             MAE = torch.sum(torch.abs(predicts_A - ally))
-            #
-            predicts_S = torch.sum(allg-V_S > 0., 1)
-            MSE = torch.sum((predicts_S - ally)**2)
-        MZE = MZE.float() / num_examples
-        MAE = MAE.float() / num_examples
-        MSE = MSE.float() / num_examples
-        if labeling=='SMB':
-            return MZE, MAE, torch.sqrt(MSE)
-        if labeling=='CT':
-            return MZE, MAE, torch.sqrt(MSE), int(torch.equal(b, torch.sort(b)[0]))
-        if labeling=='ROT' and train==True:
-            return MZE, MAE, torch.sqrt(MSE), int(torch.equal(b, torch.sort(b)[0])), int(torch.equal(V_Z, torch.sort(V_Z)[0])), int(torch.equal(V_A, torch.sort(V_A)[0])), int(torch.equal(V_S, torch.sort(V_S)[0])), V_Z, V_A, V_S
-        if labeling=='ROT' and train==False:
-            return MZE, MAE, torch.sqrt(MSE)
+        MAE  = MAE.float() / num_examples
+        if labeling=='LB':
+            return MAE
+        if labeling=='MT':
+            return MAE, int(torch.equal(b, torch.sort(b)[0]))
+        if labeling=='ST':
+            return MAE, int(torch.equal(b, torch.sort(b)[0]))
+        if labeling=='IOT' and train==True:
+            return MAE, int(torch.equal(b, torch.sort(b)[0])), int(torch.equal(V_A, torch.sort(V_A)[0])), V_A, restime
+        if labeling=='IOT' and train==False:
+            return MAE
 
 
     ##############################
     # Validation Phase
     ##############################
+    training_time = 0.
+    MT_validation_time  = 0.
+    ST_validation_time  = 0.
+    LB_validation_time = 0.
+    IOT_validation_time = 0.
+    IOT_training_time   = 0.
+    Best_LB_A = 10.**8
+    Best_MT_A  = 10.**8
+    Best_ST_A  = 10.**8
+    Best_IOT_A = 10.**8
+
     for epoch in range(NUM_EPOCHS):
+        training_time -= time.time()
         # TRAINING
         model.train()
-        for batch_idx, (features, targets) in enumerate(train_loader):
-            features, targets = features.to(DEVICE), targets.to(DEVICE)
+        for batch_idx, (features, targets, levels) in enumerate(train_loader):
+            features, levels = features.to(DEVICE), levels.to(DEVICE)
             # FORWARD AND BACK PROP
-            g, b, _ = model(features)
-            loss = loss_fn(g, b, targets)
+            g, b = model(features)
+            logits = g-b
+            loss = loss_fn(logits, levels)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            # LOGGING
+            if not batch_idx % 50:
+                s = ('Epoch: %03d/%03d | Batch %04d/%04d | Loss: %.4f' % (epoch+1, NUM_EPOCHS, batch_idx, len(train_dataset)//BATCH_SIZE, loss))
+                print(s)
+                with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
+        training_time += time.time()
         # EVALUATION
         model.eval()
         with torch.set_grad_enabled(False):
-            tra_SMB_Z, tra_SMB_A, tra_SMB_S = compute_errors(model, train_loader, 'SMB')
-            tra_CT_Z, tra_CT_A, tra_CT_S, b_ord = compute_errors(model, train_loader, 'CT')
-            _, _, _, _, vz_ord, va_ord, vs_ord, V_Z, V_A, V_S = compute_errors(model, train_loader, 'ROT', True)
-            tra_ROT_Z, tra_ROT_A, tra_ROT_S = compute_errors(model, train_loader, 'ROT', False, V_Z, V_A, V_S)
+            LB_validation_time -= time.time()
+            LB_A = compute_errors(model, valid_loader, 'LB')
+            LB_validation_time += time.time()
             #
-            val_SMB_Z, val_SMB_A, val_SMB_S = compute_errors(model, valid_loader, 'SMB')
-            val_CT_Z, val_CT_A, val_CT_S, _ = compute_errors(model, valid_loader, 'CT')
-            val_ROT_Z, val_ROT_A, val_ROT_S = compute_errors(model, valid_loader, 'ROT', False, V_Z, V_A, V_S)
+            MT_validation_time -= time.time()
+            MT_A, b_ord = compute_errors(model, valid_loader, 'MT')
+            MT_validation_time += time.time()
             #
-            tes_SMB_Z, tes_SMB_A, tes_SMB_S = compute_errors(model, test_loader, 'SMB')
-            tes_CT_Z, tes_CT_A, tes_CT_S, _ = compute_errors(model, test_loader, 'CT')
-            tes_ROT_Z, tes_ROT_A, tes_ROT_S = compute_errors(model, test_loader, 'ROT', False, V_Z, V_A, V_S)
+            ST_validation_time -= time.time()
+            ST_A, _ = compute_errors(model, valid_loader, 'ST')
+            ST_validation_time += time.time()
+            #
+            _, _, va_ord, V_A, restime = compute_errors(model, train_loader, 'IOT', True)
+            IOT_training_time += restime
+            #
+            IOT_validation_time -= time.time()
+            IOT_A = compute_errors(model, valid_loader, 'IOT', False, V_A)
+            IOT_validation_time += time.time()
+        # SAVE BEST MODELS
+        if MT_A  <= Best_MT_A:  Best_MT_A,  Best_MT_A_ep  = MT_A,  epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-MT-A.pt'))
+        if ST_A  <= Best_ST_A:  Best_ST_A,  Best_ST_A_ep  = ST_A,  epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-ST-A.pt'))
+        if LB_A <= Best_LB_A: Best_LB_A, Best_LB_A_ep = LB_A, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-LB-A.pt'))
+        if IOT_A <= Best_IOT_A: Best_IOT_A, Best_IOT_A_ep = IOT_A, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-IOT-A.pt'))
         # SAVE CURRENT/BEST ERRORS/TIME
-        s = '%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d,%d,%d,%d' % ( 
-            tra_SMB_Z, tra_SMB_A, tra_SMB_S, tra_CT_Z, tra_CT_A, tra_CT_S, tra_ROT_Z, tra_ROT_A, tra_ROT_S, 
-            val_SMB_Z, val_SMB_A, val_SMB_S, val_CT_Z, val_CT_A, val_CT_S, val_ROT_Z, val_ROT_A, val_ROT_S, 
-            tes_SMB_Z, tes_SMB_A, tes_SMB_S, tes_CT_Z, tes_CT_A, tes_CT_S, tes_ROT_Z, tes_ROT_A, tes_ROT_S, 
-            b_ord, vz_ord, va_ord, vs_ord)
+        s = 'MZE/MAE/RMSE | Current : %.4f/%.4f/%.4f/%.4f Ep. %d Ord. %d/%d | Best-LB : %.4f Ep. %d | Best-MT : %.4f Ep. %d | Best-ST : %.4f Ep. %d | Best-IOT : %.4f Ep. %d' % ( 
+            LB_A, MT_A, ST_A, IOT_A, epoch, b_ord, va_ord, Best_LB_A, Best_LB_A_ep, Best_MT_A, Best_MT_A_ep, Best_ST_A, Best_ST_A_ep, Best_IOT_A, Best_IOT_A_ep)
         print(s)
         with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
+        #
+        s = 'Time: %.4f/%.4f/%.4f/%.4f/%.4f/%.4f sec' % ( 
+            training_time, MT_validation_time, ST_validation_time, LB_validation_time, IOT_training_time, IOT_validation_time)
+        print(s)
+        with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
+
+    os.remove(os.path.join(PATH, 'Best-LB-A.pt'))
+    os.remove(os.path.join(PATH, 'Best-MT-A.pt'))
+    os.remove(os.path.join(PATH, 'Best-ST-A.pt'))
+    os.remove(os.path.join(PATH, 'Best-IOT-A.pt'))
+

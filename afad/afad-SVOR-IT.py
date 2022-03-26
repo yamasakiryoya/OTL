@@ -1,11 +1,11 @@
 ##############################
 # coding: utf-8
-# use like > python afad-SVOR-LC.py --cuda 0
+# use like > nohup python afad-SVOR.py --cuda 0 &
 ##############################
 # Imports
 ##############################
 import os
-#import time
+import time
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -22,10 +22,10 @@ torch.backends.cudnn.deterministic = True
 TRAIN_CSV_PATH = './afad_train.csv'
 TEST_CSV_PATH  = './afad_test.csv'
 VALID_CSV_PATH = './afad_valid.csv'
-IMAGE_PATH = '../datasets/tarball/AFAD-Full'
+IMAGE_PATH = '../datasets/tarball-master/AFAD-Full'
 
 
-for RANDOM_SEED in [0]:
+for RANDOM_SEED in range(20):
     ##############################
     # Args
     ##############################
@@ -38,9 +38,19 @@ for RANDOM_SEED in [0]:
     if args.cuda >= 0: DEVICE = torch.device("cuda:%d" % args.cuda)
     else: DEVICE = torch.device("cpu")
     NUM_WORKERS = args.numworkers
-    PATH = "threshold/SVOR-LC"
+    PATH = "MTM/SVOR/seed"+str(RANDOM_SEED)
     if not os.path.exists(PATH): os.makedirs(PATH)
     LOGFILE = os.path.join(PATH, 'training.log')
+    header = []
+    header.append('PyTorch Version: %s' % torch.__version__)
+    header.append('Random Seed: %s' % RANDOM_SEED)
+    header.append('Output Path: %s' % PATH)
+    header.append('Script: %s' % sys.argv[0])
+    with open(LOGFILE, 'w') as f:
+        for entry in header:
+            print(entry)
+            f.write('%s\n' % entry)
+            f.flush()
 
 
     ##############################
@@ -48,7 +58,7 @@ for RANDOM_SEED in [0]:
     ##############################
     # Hyperparameters
     learning_rate = 0.001
-    NUM_EPOCHS = 100
+    NUM_EPOCHS = 200
 
     # Architecture
     NUM_CLASSES = 26
@@ -139,8 +149,7 @@ for RANDOM_SEED in [0]:
             self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
             self.avgpool = nn.AvgPool2d(4)
             self.fc = nn.Linear(512, 1)
-            self.b0 = nn.Parameter(torch.tensor([0.]), requires_grad=False)
-            self.bi = nn.Parameter(torch.arange(1,self.num_classes-1).float())
+            self.bi = nn.Parameter(torch.arange(self.num_classes-1).float())
 
             for m in self.modules():
                 if isinstance(m, nn.Conv2d):
@@ -179,7 +188,7 @@ for RANDOM_SEED in [0]:
             x = x.view(x.size(0), -1)
             #
             fc = self.fc(x)
-            return fc, torch.cat((self.b0,self.bi))
+            return fc, self.bi
 
     def resnet(num_classes, grayscale):
         """Constructs a ResNet-34 model."""
@@ -192,8 +201,8 @@ for RANDOM_SEED in [0]:
     ##############################
     def loss_fn(g, b, targets):
         tmpb = torch.cat((torch.tensor([-10.**8]).to(DEVICE), b, torch.tensor([10.**8]).to(DEVICE))).reshape(-1,1)
-        tmpl = torch.clamp(1.+tmpb[targets]-g, min=0.)
-        tmpr = torch.clamp(1.-tmpb[targets+1]+g, min=0.)
+        tmpl = torch.relu(1.+tmpb[targets]-g)
+        tmpr = torch.relu(1.-tmpb[targets+1]+g)
         return torch.mean(tmpl+tmpr)
 
 
@@ -205,7 +214,7 @@ for RANDOM_SEED in [0]:
 
     def compute_errors(model, data_loader, labeling, train=None, V_Z=None, V_A=None, V_S=None):
         MZE, MAE, MSE, num_examples = 0., 0., 0., 0
-        if labeling=='ROT' and train==True:
+        if labeling=='IOT' and train==True:
             L_Z = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
             for j in range(NUM_CLASSES):
                 for k in range(NUM_CLASSES):
@@ -225,25 +234,34 @@ for RANDOM_SEED in [0]:
             g, b = model(features)
             num_examples += targets.size(0)
             #
-            if labeling=='CT':
-                predicts = torch.sum(g-b > 0., 1)
+            if labeling=='MT':
+                tmp = torch.zeros(g.shape[0],NUM_CLASSES-1).to(DEVICE)
+                tmp[g-b>=0.] = 1.
+                tmp = torch.cat([tmp, torch.zeros(g.shape[0],1).to(DEVICE)], 1)
+                predicts = torch.argmin(tmp, 1)
                 #
                 MZE += torch.sum(predicts != targets)
                 MAE += torch.sum(torch.abs(predicts - targets))
                 MSE += torch.sum((predicts - targets)**2)
-            if labeling=='ROT' and train==True:
+            if labeling=='ST':
+                predicts = torch.sum(g-b>=0., 1)
+                #
+                MZE += torch.sum(predicts != targets)
+                MAE += torch.sum(torch.abs(predicts - targets))
+                MSE += torch.sum((predicts - targets)**2)
+            if labeling=='IOT' and train==True:
                 allg = torch.cat((allg, g))
                 ally = torch.cat((ally, targets))
-            if labeling=='ROT' and train==False:
-                predicts_Z = torch.sum(g-V_Z > 0., 1)
+            if labeling=='IOT' and train==False:
+                predicts_Z = torch.sum(g-V_Z>=0., 1)
                 MZE += torch.sum(predicts_Z != targets)
                 #
-                predicts_A = torch.sum(g-V_A > 0., 1)
+                predicts_A = torch.sum(g-V_A>=0., 1)
                 MAE += torch.sum(torch.abs(predicts_A - targets))
                 #
-                predicts_S = torch.sum(g-V_S > 0., 1)
+                predicts_S = torch.sum(g-V_S>=0., 1)
                 MSE += torch.sum((predicts_S - targets)**2)
-        if labeling=='ROT' and train==True:
+        if labeling=='IOT' and train==True:
             allg, indeces = torch.sort(allg,0)
             ally = ally[indeces.reshape(-1)]
             #
@@ -268,28 +286,36 @@ for RANDOM_SEED in [0]:
             tmp2 = torch.argmin(M_S, 1);   tmp2[tmp2==num_examples] = num_examples-1
             V_S = (allg[tmp1,0] + allg[tmp2,0])/2.
             #
-            predicts_Z = torch.sum(allg-V_Z > 0., 1)
+            predicts_Z = torch.sum(allg-V_Z>=0., 1)
             MZE = torch.sum(predicts_Z != ally)
             #
-            predicts_A = torch.sum(allg-V_A > 0., 1)
+            predicts_A = torch.sum(allg-V_A>=0., 1)
             MAE = torch.sum(torch.abs(predicts_A - ally))
             #
-            predicts_S = torch.sum(allg-V_S > 0., 1)
+            predicts_S = torch.sum(allg-V_S>=0., 1)
             MSE = torch.sum((predicts_S - ally)**2)
         MZE  = MZE.float() / num_examples
         MAE  = MAE.float() / num_examples
         MSE  = MSE.float() / num_examples
-        if labeling=='CT':
+        if labeling=='MT':
             return MZE, MAE, torch.sqrt(MSE), int(torch.equal(b, torch.sort(b)[0]))
-        if labeling=='ROT' and train==True:
+        if labeling=='ST':
+            return MZE, MAE, torch.sqrt(MSE), int(torch.equal(b, torch.sort(b)[0]))
+        if labeling=='IOT' and train==True:
             return MZE, MAE, torch.sqrt(MSE), int(torch.equal(b, torch.sort(b)[0])), int(torch.equal(V_Z, torch.sort(V_Z)[0])), int(torch.equal(V_A, torch.sort(V_A)[0])), int(torch.equal(V_S, torch.sort(V_S)[0])), V_Z, V_A, V_S
-        if labeling=='ROT' and train==False:
+        if labeling=='IOT' and train==False:
             return MZE, MAE, torch.sqrt(MSE)
 
 
     ##############################
     # Validation Phase
     ##############################
+    start_time = time.time()
+
+    Best_MT_Z,  Best_MT_A,  Best_MT_S  = 10.**8, 10.**8, 10.**8
+    Best_ST_Z,  Best_ST_A,  Best_ST_S  = 10.**8, 10.**8, 10.**8
+    Best_IOT_Z, Best_IOT_A, Best_IOT_S = 10.**8, 10.**8, 10.**8
+
     for epoch in range(NUM_EPOCHS):
         # TRAINING
         model.train()
@@ -301,23 +327,75 @@ for RANDOM_SEED in [0]:
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            # LOGGING
+            if not batch_idx % 50:
+                s = ('Epoch: %03d/%03d | Batch %04d/%04d | Loss: %.4f' % (epoch+1, NUM_EPOCHS, batch_idx, len(train_dataset)//BATCH_SIZE, loss))
+                print(s)
+                with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
         # EVALUATION
         model.eval()
         with torch.set_grad_enabled(False):
-            tra_CT_Z, tra_CT_A, tra_CT_S, b_ord = compute_errors(model, train_loader, 'CT')
-            _, _, _, _, vz_ord, va_ord, vs_ord, V_Z, V_A, V_S = compute_errors(model, train_loader, 'ROT', True)
-            tra_ROT_Z, tra_ROT_A, tra_ROT_S = compute_errors(model, train_loader, 'ROT', False, V_Z, V_A, V_S)
-            #
-            val_CT_Z, val_CT_A, val_CT_S, b_ord = compute_errors(model, valid_loader, 'CT')
-            val_ROT_Z, val_ROT_A, val_ROT_S = compute_errors(model, valid_loader, 'ROT', False, V_Z, V_A, V_S)
-            #
-            tes_CT_Z, tes_CT_A, tes_CT_S, b_ord = compute_errors(model, test_loader, 'CT')
-            tes_ROT_Z, tes_ROT_A, tes_ROT_S = compute_errors(model, test_loader, 'ROT', False, V_Z, V_A, V_S)
+            MT_Z, MT_A, MT_S, b_ord = compute_errors(model, valid_loader, 'MT')
+            ST_Z, ST_A, ST_S, _ = compute_errors(model, valid_loader, 'ST')
+            _, _, _, _, vz_ord, va_ord, vs_ord, V_Z, V_A, V_S = compute_errors(model, train_loader, 'IOT', True)
+            IOT_Z, IOT_A, IOT_S = compute_errors(model, valid_loader, 'IOT', False, V_Z, V_A, V_S)
+        # SAVE BEST MODELS
+        if MT_Z  <= Best_MT_Z:  Best_MT_Z,  Best_MT_Z_ep  = MT_Z,  epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-MT-Z.pt'))
+        if MT_A  <= Best_MT_A:  Best_MT_A,  Best_MT_A_ep  = MT_A,  epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-MT-A.pt'))
+        if MT_S  <= Best_MT_S:  Best_MT_S,  Best_MT_S_ep  = MT_S,  epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-MT-S.pt'))
+        if ST_Z  <= Best_ST_Z:  Best_ST_Z,  Best_ST_Z_ep  = ST_Z,  epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-ST-Z.pt'))
+        if ST_A  <= Best_ST_A:  Best_ST_A,  Best_ST_A_ep  = ST_A,  epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-ST-A.pt'))
+        if ST_S  <= Best_ST_S:  Best_ST_S,  Best_ST_S_ep  = ST_S,  epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-ST-S.pt'))
+        if IOT_Z <= Best_IOT_Z: Best_IOT_Z, Best_IOT_Z_ep = IOT_Z, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-IOT-Z.pt'))
+        if IOT_A <= Best_IOT_A: Best_IOT_A, Best_IOT_A_ep = IOT_A, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-IOT-A.pt'))
+        if IOT_S <= Best_IOT_S: Best_IOT_S, Best_IOT_S_ep = IOT_S, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-IOT-S.pt'))
         # SAVE CURRENT/BEST ERRORS/TIME
-        s = '%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d,%d,%d,%d' % ( 
-            tra_CT_Z, tra_CT_A, tra_CT_S, tra_ROT_Z, tra_ROT_A, tra_ROT_S, 
-            val_CT_Z, val_CT_A, val_CT_S, val_ROT_Z, val_ROT_A, val_ROT_S, 
-            tes_CT_Z, tes_CT_A, tes_CT_S, tes_ROT_Z, tes_ROT_A, tes_ROT_S, 
-            b_ord, vz_ord, va_ord, vs_ord)
+        s = 'MZE/MAE/RMSE | Current : %.4f/%.4f/%.4f/%.4f/%.4f/%.4f/%.4f/%.4f/%.4f Ep. %d Ord. %d/%d/%d/%d | Best-MT : %.4f/%.4f/%.4f Ep. %d/%d/%d | Best-ST : %.4f/%.4f/%.4f Ep. %d/%d/%d | Best-IOT : %.4f/%.4f/%.4f Ep. %d/%d/%d' % (
+            MT_Z, MT_A, MT_S, ST_Z, ST_A, ST_S, IOT_Z, IOT_A, IOT_S, epoch, b_ord, vz_ord, va_ord, vs_ord, 
+            Best_MT_Z, Best_MT_A, Best_MT_S, Best_MT_Z_ep, Best_MT_A_ep, Best_MT_S_ep,
+            Best_ST_Z, Best_ST_A, Best_ST_S, Best_ST_Z_ep, Best_ST_A_ep, Best_ST_S_ep,
+            Best_IOT_Z, Best_IOT_A, Best_IOT_S, Best_IOT_Z_ep, Best_IOT_A_ep, Best_IOT_S_ep)
         print(s)
         with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
+        #
+        s = 'Time elapsed: %.4f min' % ((time.time() - start_time)/60)
+        print(s)
+        with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
+
+    ##############################
+    # Test Phase
+    ##############################
+    for labeling in ['MT', 'ST', 'IOT']:
+        for task in ['Z', 'A', 'S']:
+            # SAVE BEST ERRORS
+            model.load_state_dict(torch.load(os.path.join(PATH, 'Best-%s-%s.pt'%(labeling, task))))
+            model.eval()
+            with torch.set_grad_enabled(False):
+                if labeling=='MT' or labeling=='ST':
+                    tr_MZE, tr_MAE, tr_MSE, b_ord = compute_errors(model, train_loader, labeling)
+                    va_MZE, va_MAE, va_MSE, _ = compute_errors(model, valid_loader, labeling)
+                    te_MZE, te_MAE, te_MSE, _ = compute_errors(model, test_loader,  labeling)
+                    #
+                    s = 'Best-%s-%s MZE/MAE/RMSE | Train: %.4f/%.4f/%.4f | Valid: %.4f/%.4f/%.4f | Test: %.4f/%.4f/%.4f, Order | b: %d' % (
+                        labeling, task, tr_MZE, tr_MAE, tr_MSE, va_MZE, va_MAE, va_MSE, te_MZE, te_MAE, te_MSE, b_ord)
+                    print(s)
+                    with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
+                if labeling=='IOT':
+                    tr_MZE, tr_MAE, tr_MSE, b_ord, vz_ord, va_ord, vs_ord, V_Z, V_A, V_S = compute_errors(model, train_loader, labeling, True)
+                    va_MZE, va_MAE, va_MSE = compute_errors(model, valid_loader, labeling, False, V_Z, V_A, V_S)
+                    te_MZE, te_MAE, te_MSE = compute_errors(model, test_loader,  labeling, False, V_Z, V_A, V_S)
+                    #
+                    s = 'Best-%s-%s MZE/MAE/RMSE | Train: %.4f/%.4f/%.4f | Valid: %.4f/%.4f/%.4f | Test: %.4f/%.4f/%.4f, Order | b&v: %d/%d/%d/%d' % (
+                        labeling, task, tr_MZE, tr_MAE, tr_MSE, va_MZE, va_MAE, va_MSE, te_MZE, te_MAE, te_MSE, b_ord, vz_ord, va_ord, vs_ord)
+                    print(s)
+                    with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
+
+    os.remove(os.path.join(PATH, 'Best-MT-Z.pt'))
+    os.remove(os.path.join(PATH, 'Best-MT-A.pt'))
+    os.remove(os.path.join(PATH, 'Best-MT-S.pt'))
+    os.remove(os.path.join(PATH, 'Best-ST-Z.pt'))
+    os.remove(os.path.join(PATH, 'Best-ST-A.pt'))
+    os.remove(os.path.join(PATH, 'Best-ST-S.pt'))
+    os.remove(os.path.join(PATH, 'Best-IOT-Z.pt'))
+    os.remove(os.path.join(PATH, 'Best-IOT-A.pt'))
+    os.remove(os.path.join(PATH, 'Best-IOT-S.pt'))

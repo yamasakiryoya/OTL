@@ -1,11 +1,10 @@
 ##############################
 # coding: utf-8
-# use like > python cacd-ANLCL-LC.py --cuda 0
+# use like > nohup python cacd-ANLCL-LC.py --cuda 0 &
 ##############################
 # Imports
 ##############################
 import os
-#import time
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -38,9 +37,10 @@ for RANDOM_SEED in [0]:
     if args.cuda >= 0: DEVICE = torch.device("cuda:%d" % args.cuda)
     else: DEVICE = torch.device("cpu")
     NUM_WORKERS = args.numworkers
-    PATH = "threshold/ANLCL-LC"
+    PATH = "MTM/ANLCL-LC"
     if not os.path.exists(PATH): os.makedirs(PATH)
     LOGFILE = os.path.join(PATH, 'training.log')
+    LOGFILE2 = os.path.join(PATH, 'bias.log')
 
 
     ##############################
@@ -48,7 +48,7 @@ for RANDOM_SEED in [0]:
     ##############################
     # Hyperparameters
     learning_rate = 0.001
-    NUM_EPOCHS = 100
+    NUM_EPOCHS = 200
 
     # Architecture
     NUM_CLASSES = 49
@@ -141,8 +141,7 @@ for RANDOM_SEED in [0]:
             self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
             self.avgpool = nn.AvgPool2d(4)
             self.fc = nn.Linear(512, 1)
-            self.b0 = nn.Parameter(torch.tensor([0.]), requires_grad=False)
-            self.bi = nn.Parameter(torch.arange(1,self.num_classes-1).float())
+            self.bi = nn.Parameter(torch.arange(self.num_classes-1).float())
 
             for m in self.modules():
                 if isinstance(m, nn.Conv2d):
@@ -181,9 +180,9 @@ for RANDOM_SEED in [0]:
             x = x.view(x.size(0), -1)
             #
             fc = self.fc(x)
-            logits = fc - torch.cat((self.b0,self.bi))
+            logits = fc - self.bi
             probas = torch.sigmoid(logits)
-            return fc, torch.cat((self.b0,self.bi)), logits, probas
+            return fc, self.bi, logits, probas
 
     def resnet(num_classes, grayscale):
         """Constructs a ResNet-34 model."""
@@ -206,7 +205,7 @@ for RANDOM_SEED in [0]:
 
     def compute_errors(model, data_loader, labeling, train=None, V_Z=None, V_A=None, V_S=None):
         MZE, MAE, MSE, num_examples = 0., 0., 0., 0
-        if labeling=='SMB' or (labeling=='ROT' and train==True):
+        if labeling=='LB' or (labeling=='IOT' and train==True):
             L_Z = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
             for j in range(NUM_CLASSES):
                 for k in range(NUM_CLASSES):
@@ -219,7 +218,7 @@ for RANDOM_SEED in [0]:
             for j in range(NUM_CLASSES):
                 for k in range(NUM_CLASSES):
                     L_S[j,k] = (j-k)**2
-        if labeling=='ROT' and train==True:
+        if labeling=='IOT' and train==True:
             allg = torch.tensor([], dtype=torch.float).to(DEVICE)
             ally = torch.tensor([], dtype=torch.long).to(DEVICE)
         for i, (features, targets, _) in enumerate(data_loader):
@@ -227,7 +226,7 @@ for RANDOM_SEED in [0]:
             g, b, _, probas = model(features)
             num_examples += targets.size(0)
             #
-            if labeling=='SMB':
+            if labeling=='LB':
                 Mprobas = torch.cat([torch.ones(probas.size(0), 1).to(DEVICE), probas], 1) - torch.cat([probas, torch.zeros(probas.size(0), 1).to(DEVICE)], 1)
                 predicts_Z = torch.argmin(torch.mm(Mprobas, L_Z), 1)
                 MZE += torch.sum(predicts_Z != targets)
@@ -237,16 +236,25 @@ for RANDOM_SEED in [0]:
                 #
                 predicts_S = torch.argmin(torch.mm(Mprobas, L_S), 1)
                 MSE += torch.sum((predicts_S - targets)**2)
-            if labeling=='CT':
+            if labeling=='MT':
+                tmp = torch.zeros(g.shape[0],NUM_CLASSES-1).to(DEVICE)
+                tmp[g-b>=0.] = 1.
+                tmp = torch.cat([tmp, torch.zeros(g.shape[0],1).to(DEVICE)], 1)
+                predicts = torch.argmin(tmp, 1)
+                #
+                MZE += torch.sum(predicts != targets)
+                MAE += torch.sum(torch.abs(predicts - targets))
+                MSE += torch.sum((predicts - targets)**2)
+            if labeling=='ST':
                 predicts = torch.sum(g-b > 0., 1)
                 #
                 MZE += torch.sum(predicts != targets)
                 MAE += torch.sum(torch.abs(predicts - targets))
                 MSE += torch.sum((predicts - targets)**2)
-            if labeling=='ROT' and train==True:
+            if labeling=='IOT' and train==True:
                 allg = torch.cat((allg, g))
                 ally = torch.cat((ally, targets))
-            if labeling=='ROT' and train==False:
+            if labeling=='IOT' and train==False:
                 predicts_Z = torch.sum(g-V_Z > 0., 1)
                 MZE += torch.sum(predicts_Z != targets)
                 #
@@ -255,7 +263,7 @@ for RANDOM_SEED in [0]:
                 #
                 predicts_S = torch.sum(g-V_S > 0., 1)
                 MSE += torch.sum((predicts_S - targets)**2)
-        if labeling=='ROT' and train==True:
+        if labeling=='IOT' and train==True:
             allg, indeces = torch.sort(allg,0)
             ally = ally[indeces.reshape(-1)]
             #
@@ -291,13 +299,15 @@ for RANDOM_SEED in [0]:
         MZE  = MZE.float() / num_examples
         MAE  = MAE.float() / num_examples
         MSE  = MSE.float() / num_examples
-        if labeling=='SMB':
+        if labeling=='LB':
             return MZE, MAE, torch.sqrt(MSE)
-        if labeling=='CT':
+        if labeling=='MT':
             return MZE, MAE, torch.sqrt(MSE), int(torch.equal(b, torch.sort(b)[0]))
-        if labeling=='ROT' and train==True:
+        if labeling=='ST':
+            return MZE, MAE, torch.sqrt(MSE), int(torch.equal(b, torch.sort(b)[0]))
+        if labeling=='IOT' and train==True:
             return MZE, MAE, torch.sqrt(MSE), int(torch.equal(b, torch.sort(b)[0])), int(torch.equal(V_Z, torch.sort(V_Z)[0])), int(torch.equal(V_A, torch.sort(V_A)[0])), int(torch.equal(V_S, torch.sort(V_S)[0])), V_Z, V_A, V_S
-        if labeling=='ROT' and train==False:
+        if labeling=='IOT' and train==False:
             return MZE, MAE, torch.sqrt(MSE)
 
 
@@ -318,23 +328,54 @@ for RANDOM_SEED in [0]:
         # EVALUATION
         model.eval()
         with torch.set_grad_enabled(False):
-            tra_SMB_Z, tra_SMB_A, tra_SMB_S = compute_errors(model, train_loader, 'SMB')
-            tra_CT_Z, tra_CT_A, tra_CT_S, b_ord = compute_errors(model, train_loader, 'CT')
-            _, _, _, _, vz_ord, va_ord, vs_ord, V_Z, V_A, V_S = compute_errors(model, train_loader, 'ROT', True)
-            tra_ROT_Z, tra_ROT_A, tra_ROT_S = compute_errors(model, train_loader, 'ROT', False, V_Z, V_A, V_S)
+            train_loss, targets_NUM = 0., 0
+            for batch_idx, (features, targets, levels) in enumerate(train_loader):
+                features, targets, levels = features.to(DEVICE), targets.to(DEVICE), levels.to(DEVICE)
+                _, b, logits, _ = model(features)
+                train_loss += loss_fn(logits, levels)*targets.shape[0]
+                targets_NUM += targets.shape[0]
+            train_loss = train_loss/targets_NUM
+            valid_loss, targets_NUM = 0., 0
+            for batch_idx, (features, targets, levels) in enumerate(valid_loader):
+                features, targets, levels = features.to(DEVICE), targets.to(DEVICE), levels.to(DEVICE)
+                _, b, logits, _ = model(features)
+                valid_loss += loss_fn(logits, levels)*targets.shape[0]
+                targets_NUM += targets.shape[0]
+            valid_loss = valid_loss/targets_NUM
+            test_loss, targets_NUM = 0., 0
+            for batch_idx, (features, targets, levels) in enumerate(test_loader):
+                features, targets, levels = features.to(DEVICE), targets.to(DEVICE), levels.to(DEVICE)
+                _, b, logits, _ = model(features)
+                test_loss += loss_fn(logits, levels)*targets.shape[0]
+                targets_NUM += targets.shape[0]
+            test_loss = test_loss/targets_NUM
             #
-            val_SMB_Z, val_SMB_A, val_SMB_S = compute_errors(model, valid_loader, 'SMB')
-            val_CT_Z, val_CT_A, val_CT_S, b_ord = compute_errors(model, valid_loader, 'CT')
-            val_ROT_Z, val_ROT_A, val_ROT_S = compute_errors(model, valid_loader, 'ROT', False, V_Z, V_A, V_S)
+            tra_LB_Z, tra_LB_A, tra_LB_S = compute_errors(model, train_loader, 'LB')
+            tra_MT_Z, tra_MT_A, tra_MT_S, b_ord = compute_errors(model, train_loader, 'MT')
+            tra_ST_Z, tra_ST_A, tra_ST_S, _ = compute_errors(model, train_loader, 'ST')
+            _, _, _, _, vz_ord, va_ord, vs_ord, V_Z, V_A, V_S = compute_errors(model, train_loader, 'IOT', True)
+            tra_IOT_Z, tra_IOT_A, tra_IOT_S = compute_errors(model, train_loader, 'IOT', False, V_Z, V_A, V_S)
             #
-            tes_SMB_Z, tes_SMB_A, tes_SMB_S = compute_errors(model, test_loader, 'SMB')
-            tes_CT_Z, tes_CT_A, tes_CT_S, b_ord = compute_errors(model, test_loader, 'CT')
-            tes_ROT_Z, tes_ROT_A, tes_ROT_S = compute_errors(model, test_loader, 'ROT', False, V_Z, V_A, V_S)
+            val_LB_Z, val_LB_A, val_LB_S = compute_errors(model, valid_loader, 'LB')
+            val_MT_Z, val_MT_A, val_MT_S, _ = compute_errors(model, valid_loader, 'MT')
+            val_ST_Z, val_ST_A, val_ST_S, _ = compute_errors(model, valid_loader, 'ST')
+            val_IOT_Z, val_IOT_A, val_IOT_S = compute_errors(model, valid_loader, 'IOT', False, V_Z, V_A, V_S)
+            #
+            tes_LB_Z, tes_LB_A, tes_LB_S = compute_errors(model, test_loader, 'LB')
+            tes_MT_Z, tes_MT_A, tes_MT_S, _ = compute_errors(model, test_loader, 'MT')
+            tes_ST_Z, tes_ST_A, tes_ST_S, _d = compute_errors(model, test_loader, 'ST')
+            tes_IOT_Z, tes_IOT_A, tes_IOT_S = compute_errors(model, test_loader, 'IOT', False, V_Z, V_A, V_S)
         # SAVE CURRENT/BEST ERRORS/TIME
-        s = '%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d,%d,%d,%d' % ( 
-            tra_SMB_Z, tra_SMB_A, tra_SMB_S, tra_CT_Z, tra_CT_A, tra_CT_S, tra_ROT_Z, tra_ROT_A, tra_ROT_S, 
-            val_SMB_Z, val_SMB_A, val_SMB_S, val_CT_Z, val_CT_A, val_CT_S, val_ROT_Z, val_ROT_A, val_ROT_S, 
-            tes_SMB_Z, tes_SMB_A, tes_SMB_S, tes_CT_Z, tes_CT_A, tes_CT_S, tes_ROT_Z, tes_ROT_A, tes_ROT_S, 
+        s = '%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%d,%d,%d,%d' % ( 
+            train_loss, valid_loss, test_loss, 
+            tra_LB_Z, tra_LB_A, tra_LB_S, tra_MT_Z, tra_MT_A, tra_MT_S, tra_ST_Z, tra_ST_A, tra_ST_S, tra_IOT_Z, tra_IOT_A, tra_IOT_S, 
+            val_LB_Z, val_LB_A, val_LB_S, val_MT_Z, val_MT_A, val_MT_S, val_ST_Z, val_ST_A, val_ST_S, val_IOT_Z, val_IOT_A, val_IOT_S, 
+            tes_LB_Z, tes_LB_A, tes_LB_S, tes_MT_Z, tes_MT_A, tes_MT_S, tes_ST_Z, tes_ST_A, tes_ST_S, tes_IOT_Z, tes_IOT_A, tes_IOT_S, 
             b_ord, vz_ord, va_ord, vs_ord)
         print(s)
         with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
+        #
+        with open(LOGFILE2, 'a') as f: f.write('%s' % b[0].item())
+        for k in range(1,NUM_CLASSES-1):
+            with open(LOGFILE2, 'a') as f: f.write(',%s' % b[k].item())
+        with open(LOGFILE2, 'a') as f: f.write('\n')

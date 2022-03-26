@@ -13,7 +13,7 @@ for M in [0,1,2,3,4,5,6]:
     for D in [0,1,2]:
         d = datasets[D]
         for seed in range(TNUM):
-            path = '../' + d + '/threshold/' + m + '/seed' + str(seed) + '/training.log'
+            path = '../' + d + '/MTM/' + m + '/seed' + str(seed) + '/training.log'
             with open(path) as f: l1 = f.readlines()
             #
             if M==0:

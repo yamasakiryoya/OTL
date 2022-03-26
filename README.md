@@ -6,13 +6,13 @@
 3. separate training, validation, and test sets: python makecsv-morph2.py, python makecsv-cacd.py, python makecsv-afad.py at ./datasets/
 
 ## experiments for learning curve
-1. experiments: e.g., python afad-NLL-LC.py --cuda 0 at ./afad/ (for all datasets and methods)
+1. experiments: e.g., python afad-ANLCL-LC.py --cuda 0 at ./afad/ (for all datasets)
 2. make tables: python figure.py at ./results/
 
 ## experiments on classification performance
-1. experiments: e.g., python afad-NLL.py --cuda 0 at ./afad/ (for all datasets and methods)
+1. experiments: e.g., python afad-ANLCL.py --cuda 0 at ./afad/ (for all datasets and methods)
 2. make tables: python table.py at ./results/
 
 ## experiments on computation time
-1. experiments: e.g., python afad-NLL-Time.py --cuda 0 at ./afad/
-2. make tables: e.g., read ./afad/threshold/NLL-Time/training.log
+1. experiments: e.g., python afad-ANLCL-Time.py --cuda 0 at ./afad/ (for all datasets)
+2. make tables: e.g., read ./afad/MTM/ANLCL-Time/training.log
