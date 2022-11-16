@@ -1,6 +1,6 @@
 ##############################
 # coding: utf-8
-# use like > nohup python morph2-AD.py --cuda 0 &
+# use like > nohup python cacd-logi-IT.py --cuda 0 &
 ##############################
 # Imports
 ##############################
@@ -19,8 +19,8 @@ from torchvision import transforms
 from PIL import Image
 torch.backends.cudnn.deterministic = True
 
-CSV_PATH = './morph2_all.csv'
-IMAGE_PATH = '../datasets/morph2-aligned'
+CSV_PATH = './cacd_all.csv'
+IMAGE_PATH = '../datasets/CACD2000-centered'
 
 for RANDOM_SEED in range(10):
     ##############################
@@ -37,16 +37,22 @@ for RANDOM_SEED in range(10):
     #
     NUM_WORKERS = args.numworkers
     #
-    PATH = "result/AD/seed"+str(RANDOM_SEED)
+    PATH = "result/logi-IT/seed"+str(RANDOM_SEED)
     if not os.path.exists(PATH): os.makedirs(PATH)
     #
     LOGFILE_LO = os.path.join(PATH, 'training_LO.log')
     with open(LOGFILE_LO, 'w') as f: pass
-    LOGFILE_NT = os.path.join(PATH, 'training_NT.log')
-    with open(LOGFILE_NT, 'w') as f: pass
+    LOGFILE_RL = os.path.join(PATH, 'training_RL.log')
+    with open(LOGFILE_RL, 'w') as f: pass
+    LOGFILE_MT = os.path.join(PATH, 'training_MT.log')
+    with open(LOGFILE_MT, 'w') as f: pass
+    LOGFILE_ST = os.path.join(PATH, 'training_ST.log')
+    with open(LOGFILE_ST, 'w') as f: pass
     LOGFILE_OT = os.path.join(PATH, 'training_OT.log')
     with open(LOGFILE_OT, 'w') as f: pass
     #
+    LOGFILE_B = os.path.join(PATH, 'bias.log')
+    with open(LOGFILE_B, 'w') as f: pass
     LOGFILE_Z = os.path.join(PATH, 'threshold_Z.log')
     with open(LOGFILE_Z, 'w') as f: pass
     LOGFILE_A = os.path.join(PATH, 'threshold_A.log')
@@ -63,7 +69,7 @@ for RANDOM_SEED in range(10):
     NUM_EPOCHS = 100
 
     # Architecture
-    NUM_CLASSES = 55
+    NUM_CLASSES = 49
     BATCH_SIZE = 256
     GRAYSCALE = False
 
@@ -76,8 +82,8 @@ for RANDOM_SEED in range(10):
     REST_DF  = ALL_DF.drop(TRAIN_DF.index)
     VALID_DF = REST_DF.sample(frac=0.08/0.28, random_state=RANDOM_SEED)
     TEST_DF  = REST_DF.drop(VALID_DF.index)
-    class MORPH2_Dataset(Dataset):
-        """Custom Dataset for loading MORPH2 face images"""
+    class CACD_Dataset(Dataset):
+        """Custom Dataset for loading CACD face images"""
         def __init__(self, df, img_dir, transform=None):
             self.img_dir = img_dir
             self.img_names = df['file'].values
@@ -96,11 +102,11 @@ for RANDOM_SEED in range(10):
 
     custom_transform  = transforms.Compose([transforms.Resize((128, 128)), transforms.RandomCrop((120, 120)), transforms.ToTensor()])
     custom_transform2 = transforms.Compose([transforms.Resize((128, 128)), transforms.CenterCrop((120, 120)), transforms.ToTensor()])
-    train_dataset  = MORPH2_Dataset(df=TRAIN_DF, img_dir=IMAGE_PATH, transform=custom_transform)
-    train2_dataset = MORPH2_Dataset(df=TRAIN_DF, img_dir=IMAGE_PATH, transform=custom_transform2)
-    valid2_dataset = MORPH2_Dataset(df=VALID_DF, img_dir=IMAGE_PATH, transform=custom_transform2)
-    test2_dataset  = MORPH2_Dataset(df=TEST_DF,  img_dir=IMAGE_PATH, transform=custom_transform2)
-    train_loader   = DataLoader(dataset=train_dataset,  batch_size=BATCH_SIZE, shuffle=True,  num_workers=NUM_WORKERS)
+    train_dataset  = CACD_Dataset(df=TRAIN_DF, img_dir=IMAGE_PATH, transform=custom_transform)
+    train2_dataset = CACD_Dataset(df=TRAIN_DF, img_dir=IMAGE_PATH, transform=custom_transform2)
+    valid2_dataset = CACD_Dataset(df=VALID_DF, img_dir=IMAGE_PATH, transform=custom_transform2)
+    test2_dataset  = CACD_Dataset(df=TEST_DF,  img_dir=IMAGE_PATH, transform=custom_transform2)
+    train_loader   = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True,  num_workers=NUM_WORKERS)
     train2_loader  = DataLoader(dataset=train2_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
     valid2_loader  = DataLoader(dataset=valid2_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
     test2_loader   = DataLoader(dataset=test2_dataset,  batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
@@ -156,6 +162,7 @@ for RANDOM_SEED in range(10):
             self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
             self.avgpool = nn.AvgPool2d(4)
             self.fc = nn.Linear(512, 1)
+            self.bi = nn.Parameter(1.0*torch.arange(self.num_classes-2).float())
 
             for m in self.modules():
                 if isinstance(m, nn.Conv2d):
@@ -194,20 +201,21 @@ for RANDOM_SEED in range(10):
             x = x.view(x.size(0), -1)
             #
             fc = self.fc(x)+1.0*(NUM_CLASSES-2.)/2.
-            #
-            return fc
+            return fc, torch.cat([torch.tensor([0.0]).to(DEVICE),self.bi])
 
     def resnet(num_classes, grayscale):
         """Constructs a ResNet-34 model."""
         model = ResNet(block=BasicBlock, layers=[3, 4, 6, 3], num_classes=num_classes, grayscale=grayscale)
         return model
 
-
     ##############################
     # Settings
     ##############################
-    def loss_fn(a, targets):
-        return torch.mean(torch.abs(targets.float()-a.flatten()))
+    def loss_fn(a, b, targets):
+        tmpl = torch.cat([torch.zeros(a.shape[0],1).to(DEVICE),-F.logsigmoid(-b+a)],dim=1).gather(dim=-1, index=targets.unsqueeze(1)).squeeze(1)
+        tmpr = torch.cat([-F.logsigmoid(b-a),torch.zeros(a.shape[0],1).to(DEVICE)],dim=1).gather(dim=-1, index=targets.unsqueeze(1)).squeeze(1)
+        return torch.mean(tmpl+tmpr)
+
 
     torch.manual_seed(RANDOM_SEED)
     torch.cuda.manual_seed(RANDOM_SEED)
@@ -253,7 +261,7 @@ for RANDOM_SEED in range(10):
 
     def compute_errors(model, data_loader, labeling, train=None, t_Z=None, t_A=None, t_S=None):
         MZE, MAE, MSE, num_examples = 0., 0., 0., 0
-        if labeling=='OT' and train==True:
+        if labeling=='RL' or (labeling=='OT' and train==True):
             L_Z = torch.zeros(NUM_CLASSES, NUM_CLASSES, dtype=torch.float).to(DEVICE)
             for j, k in product(range(NUM_CLASSES),range(NUM_CLASSES)):
                 if j!=k: L_Z[j,k] = 1.
@@ -268,11 +276,32 @@ for RANDOM_SEED in range(10):
             ally = torch.tensor([], dtype=torch.long).to(DEVICE)
         for i, (features, targets) in enumerate(data_loader):
             features, targets = features.to(DEVICE), targets.to(DEVICE)
-            a = model(features)
+            a, b = model(features)
             num_examples += targets.size(0)
             #
-            if labeling=='NT':
-                b = (torch.arange(NUM_CLASSES-1).float()+0.5).to(DEVICE)
+            if labeling=='RL':
+                tmp1 = b-a
+                tmp2 = torch.zeros(tmp1.shape[0], NUM_CLASSES).float().to(DEVICE)
+                for k in range(1,NUM_CLASSES): tmp2[:,k] = tmp2[:,k-1] - tmp1[:,k-1]
+                prob = tmp2.softmax(dim=1)
+                #
+                predicts_Z = torch.argmin(torch.mm(prob, L_Z), dim=1)
+                predicts_A = torch.argmin(torch.mm(prob, L_A), dim=1)
+                predicts_S = torch.argmin(torch.mm(prob, L_S), dim=1)
+                #
+                MZE += torch.sum(predicts_Z != targets)
+                MAE += torch.sum(torch.abs(predicts_A - targets))
+                MSE += torch.sum((predicts_S - targets)**2)
+            if labeling=='MT':
+                tmp = torch.zeros(a.shape[0],NUM_CLASSES-1).to(DEVICE)
+                tmp[a-b>=0.] = 1.
+                tmp = torch.cat([tmp, torch.zeros(a.shape[0],1).to(DEVICE)], 1)
+                predicts = torch.argmin(tmp, 1)
+                #
+                MZE += torch.sum(predicts != targets)
+                MAE += torch.sum(torch.abs(predicts - targets))
+                MSE += torch.sum((predicts - targets)**2)
+            if labeling=='ST':
                 predicts = torch.sum(a-b>=0., 1)
                 #
                 MZE += torch.sum(predicts != targets)
@@ -304,7 +333,11 @@ for RANDOM_SEED in range(10):
         MZE = MZE.float() / num_examples
         MAE = MAE.float() / num_examples
         MSE = MSE.float() / num_examples
-        if labeling=='NT':
+        if labeling=='RL':
+            return MZE, MAE, MSE
+        if labeling=='MT':
+            return MZE, MAE, MSE
+        if labeling=='ST':
             return MZE, MAE, MSE
         if labeling=='OT' and train==True:
             return MZE, MAE, MSE, t_Z, t_A, t_S
@@ -321,8 +354,8 @@ for RANDOM_SEED in range(10):
         for features, targets in train_loader:
             features, targets = features.to(DEVICE), targets.to(DEVICE)
             # FORWARD AND BACK PROP
-            a = model(features)
-            loss = loss_fn(a, targets)
+            a, b = model(features)
+            loss = loss_fn(a, b, targets)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -330,7 +363,9 @@ for RANDOM_SEED in range(10):
         #scheduler.step()
         # EVALUATION
         best_loss = 10.**8
-        best_NT_Z, best_NT_A, best_NT_S = 10.**8, 10.**8, 10.**8
+        best_RL_Z, best_RL_A, best_RL_S = 10.**8, 10.**8, 10.**8
+        best_MT_Z, best_MT_A, best_MT_S = 10.**8, 10.**8, 10.**8
+        best_ST_Z, best_ST_A, best_ST_S = 10.**8, 10.**8, 10.**8
         best_OT_Z, best_OT_A, best_OT_S = 10.**8, 10.**8, 10.**8
         model.eval()
         with torch.set_grad_enabled(False):
@@ -338,30 +373,52 @@ for RANDOM_SEED in range(10):
             tr_loss, va_loss, te_loss, tr_n, va_n, te_n = 0., 0., 0., 0, 0, 0
             for features, targets in train2_loader:
                 features, targets = features.to(DEVICE), targets.to(DEVICE); n = len(targets)
-                a = model(features); tr_loss += loss_fn(a, targets)*n; tr_n += n
+                a, b = model(features); tr_loss += loss_fn(a, b, targets)*n; tr_n += n
             for features, targets in valid2_loader:
                 features, targets = features.to(DEVICE), targets.to(DEVICE); n = len(targets)
-                a = model(features); va_loss += loss_fn(a, targets)*n; va_n += n
+                a, b = model(features); va_loss += loss_fn(a, b, targets)*n; va_n += n
             for features, targets in test2_loader:
                 features, targets = features.to(DEVICE), targets.to(DEVICE); n = len(targets)
-                a = model(features); te_loss += loss_fn(a, targets)*n; te_n += n
+                a, b = model(features); te_loss += loss_fn(a, b, targets)*n; te_n += n
             tr_loss = tr_loss/tr_n; va_loss = va_loss/va_n; te_loss = te_loss/te_n
             #
             print(tr_loss, va_loss, te_loss)
             s_LO = '%f,%f,%f' % (tr_loss, va_loss, te_loss)
             with open(LOGFILE_LO, 'a') as f: f.write('%s\n' % s_LO)
             #if va_loss<best_loss: best_loss = va_loss; torch.save(model.state_dict(), os.path.join(PATH, 'best_loss.pt'))
-            #task risk with NT labeling
-            tr_NT_Z, tr_NT_A, tr_NT_S = compute_errors(model, train2_loader, 'NT')
-            va_NT_Z, va_NT_A, va_NT_S = compute_errors(model, valid2_loader, 'NT')
-            te_NT_Z, te_NT_A, te_NT_S = compute_errors(model, test2_loader,  'NT')
+            #task risk with RL labeling
+            tr_RL_Z, tr_RL_A, tr_RL_S = compute_errors(model, train2_loader, 'RL')
+            va_RL_Z, va_RL_A, va_RL_S = compute_errors(model, valid2_loader, 'RL')
+            te_RL_Z, te_RL_A, te_RL_S = compute_errors(model, test2_loader,  'RL')
             #
-            print(tr_NT_Z, tr_NT_A, tr_NT_S, va_NT_Z, va_NT_A, va_NT_S, te_NT_Z, te_NT_A, te_NT_S)
-            s_NT = '%f,%f,%f,%f,%f,%f,%f,%f,%f' % (tr_NT_Z, tr_NT_A, tr_NT_S, va_NT_Z, va_NT_A, va_NT_S, te_NT_Z, te_NT_A, te_NT_S)
-            with open(LOGFILE_NT, 'a') as f: f.write('%s\n' % s_NT)
-            #if va_NT_Z<best_NT_Z: best_NT_Z = va_NT_Z; torch.save(model.state_dict(), os.path.join(PATH, 'best_NT_Z.pt'))
-            #if va_NT_A<best_NT_A: best_NT_A = va_NT_A; torch.save(model.state_dict(), os.path.join(PATH, 'best_NT_A.pt'))
-            #if va_NT_S<best_NT_S: best_NT_S = va_NT_S; torch.save(model.state_dict(), os.path.join(PATH, 'best_NT_S.pt'))
+            print(tr_RL_Z, tr_RL_A, tr_RL_S, va_RL_Z, va_RL_A, va_RL_S, te_RL_Z, te_RL_A, te_RL_S)
+            s_RL = '%f,%f,%f,%f,%f,%f,%f,%f,%f' % (tr_RL_Z, tr_RL_A, tr_RL_S, va_RL_Z, va_RL_A, va_RL_S, te_RL_Z, te_RL_A, te_RL_S)
+            with open(LOGFILE_RL, 'a') as f: f.write('%s\n' % s_RL)
+            #if va_RL_Z<best_RL_Z: best_RL_Z = va_RL_Z; torch.save(model.state_dict(), os.path.join(PATH, 'best_RL_Z.pt'))
+            #if va_RL_A<best_RL_A: best_RL_A = va_RL_A; torch.save(model.state_dict(), os.path.join(PATH, 'best_RL_A.pt'))
+            #if va_RL_S<best_RL_S: best_RL_S = va_RL_S; torch.save(model.state_dict(), os.path.join(PATH, 'best_RL_S.pt'))
+            #task risk with MT labeling
+            tr_MT_Z, tr_MT_A, tr_MT_S = compute_errors(model, train2_loader, 'MT')
+            va_MT_Z, va_MT_A, va_MT_S = compute_errors(model, valid2_loader, 'MT')
+            te_MT_Z, te_MT_A, te_MT_S = compute_errors(model, test2_loader,  'MT')
+            #
+            print(tr_MT_Z, tr_MT_A, tr_MT_S, va_MT_Z, va_MT_A, va_MT_S, te_MT_Z, te_MT_A, te_MT_S)
+            s_MT = '%f,%f,%f,%f,%f,%f,%f,%f,%f' % (tr_MT_Z, tr_MT_A, tr_MT_S, va_MT_Z, va_MT_A, va_MT_S, te_MT_Z, te_MT_A, te_MT_S)
+            with open(LOGFILE_MT, 'a') as f: f.write('%s\n' % s_MT)
+            #if va_MT_Z<best_MT_Z: best_MT_Z = va_MT_Z; torch.save(model.state_dict(), os.path.join(PATH, 'best_MT_Z.pt'))
+            #if va_MT_A<best_MT_A: best_MT_A = va_MT_A; torch.save(model.state_dict(), os.path.join(PATH, 'best_MT_A.pt'))
+            #if va_MT_S<best_MT_S: best_MT_S = va_MT_S; torch.save(model.state_dict(), os.path.join(PATH, 'best_MT_S.pt'))
+            #task risk with ST labeling
+            tr_ST_Z, tr_ST_A, tr_ST_S = compute_errors(model, train2_loader, 'ST')
+            va_ST_Z, va_ST_A, va_ST_S = compute_errors(model, valid2_loader, 'ST')
+            te_ST_Z, te_ST_A, te_ST_S = compute_errors(model, test2_loader,  'ST')
+            #
+            print(tr_ST_Z, tr_ST_A, tr_ST_S, va_ST_Z, va_ST_A, va_ST_S, te_ST_Z, te_ST_A, te_ST_S)
+            s_ST = '%f,%f,%f,%f,%f,%f,%f,%f,%f' % (tr_ST_Z, tr_ST_A, tr_ST_S, va_ST_Z, va_ST_A, va_ST_S, te_ST_Z, te_ST_A, te_ST_S)
+            with open(LOGFILE_ST, 'a') as f: f.write('%s\n' % s_ST)
+            #if va_ST_Z<best_ST_Z: best_ST_Z = va_ST_Z; torch.save(model.state_dict(), os.path.join(PATH, 'best_ST_Z.pt'))
+            #if va_ST_A<best_ST_A: best_ST_A = va_ST_A; torch.save(model.state_dict(), os.path.join(PATH, 'best_ST_A.pt'))
+            #if va_ST_S<best_ST_S: best_ST_S = va_ST_S; torch.save(model.state_dict(), os.path.join(PATH, 'best_ST_S.pt'))
             #task risk with OT labeling
             _, _, _,  t_Z,  t_A,  t_S = compute_errors(model, train2_loader, 'OT', True)
             tr_OT_Z, tr_OT_A, tr_OT_S = compute_errors(model, train2_loader, 'OT', False, t_Z, t_A, t_S)
@@ -374,6 +431,11 @@ for RANDOM_SEED in range(10):
             #if va_OT_Z<best_OT_Z: best_OT_Z = va_OT_Z; torch.save(model.state_dict(), os.path.join(PATH, 'best_OT_Z.pt'))
             #if va_OT_A<best_OT_A: best_OT_A = va_OT_A; torch.save(model.state_dict(), os.path.join(PATH, 'best_OT_A.pt'))
             #if va_OT_S<best_OT_S: best_OT_S = va_OT_S; torch.save(model.state_dict(), os.path.join(PATH, 'best_OT_S.pt'))
+        #bias parameters
+        b = b.to('cpu').detach().numpy().copy()
+        s = '%f'%b[0]
+        for i in range(1,len(b)): s = s+',%f'%b[i]
+        with open(LOGFILE_B, 'a') as f: f.write('%s\n' % s)
         #OT parameters for Task-Z
         t_Z = t_Z.to('cpu').detach().numpy().copy()
         s = '%f'%t_Z[0]

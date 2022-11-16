@@ -5,25 +5,24 @@
 # Imports
 ##############################
 import os
-import time
+import math
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import argparse
 import sys
+from itertools import product
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from PIL import Image
-
 torch.backends.cudnn.deterministic = True
 
 CSV_PATH = './cacd_all.csv'
 IMAGE_PATH = '../datasets/CACD2000-centered'
 
-
-for RANDOM_SEED in range(20):
+for RANDOM_SEED in range(10):
     ##############################
     # Args
     ##############################
@@ -35,29 +34,33 @@ for RANDOM_SEED in range(20):
     #
     if args.cuda >= 0: DEVICE = torch.device("cuda:%d" % args.cuda)
     else: DEVICE = torch.device("cpu")
+    #
     NUM_WORKERS = args.numworkers
-    PATH = "MTM/AD/seed"+str(RANDOM_SEED)
+    #
+    PATH = "result/AD/seed"+str(RANDOM_SEED)
     if not os.path.exists(PATH): os.makedirs(PATH)
-    LOGFILE = os.path.join(PATH, 'training.log')
-    header = []
-    header.append('PyTorch Version: %s' % torch.__version__)
-    header.append('Random Seed: %s' % RANDOM_SEED)
-    header.append('Output Path: %s' % PATH)
-    header.append('Script: %s' % sys.argv[0])
-    with open(LOGFILE, 'w') as f:
-        for entry in header:
-            print(entry)
-            f.write('%s\n' % entry)
-            f.flush()
-
+    #
+    LOGFILE_LO = os.path.join(PATH, 'training_LO.log')
+    with open(LOGFILE_LO, 'w') as f: pass
+    LOGFILE_NT = os.path.join(PATH, 'training_NT.log')
+    with open(LOGFILE_NT, 'w') as f: pass
+    LOGFILE_OT = os.path.join(PATH, 'training_OT.log')
+    with open(LOGFILE_OT, 'w') as f: pass
+    #
+    LOGFILE_Z = os.path.join(PATH, 'threshold_Z.log')
+    with open(LOGFILE_Z, 'w') as f: pass
+    LOGFILE_A = os.path.join(PATH, 'threshold_A.log')
+    with open(LOGFILE_A, 'w') as f: pass
+    LOGFILE_S = os.path.join(PATH, 'threshold_S.log')
+    with open(LOGFILE_S, 'w') as f: pass
 
 
     ##############################
     # Settings
     ##############################
     # Hyperparameters
-    learning_rate = 0.001
-    NUM_EPOCHS = 200
+    learning_rate = .1**2.5
+    NUM_EPOCHS = 100
 
     # Architecture
     NUM_CLASSES = 49
@@ -93,12 +96,14 @@ for RANDOM_SEED in range(20):
 
     custom_transform  = transforms.Compose([transforms.Resize((128, 128)), transforms.RandomCrop((120, 120)), transforms.ToTensor()])
     custom_transform2 = transforms.Compose([transforms.Resize((128, 128)), transforms.CenterCrop((120, 120)), transforms.ToTensor()])
-    train_dataset = CACD_Dataset(df=TRAIN_DF, img_dir=IMAGE_PATH, transform=custom_transform)
-    valid_dataset = CACD_Dataset(df=VALID_DF, img_dir=IMAGE_PATH, transform=custom_transform2)
-    test_dataset  = CACD_Dataset(df=TEST_DF,  img_dir=IMAGE_PATH, transform=custom_transform2)
-    train_loader  = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True,  num_workers=NUM_WORKERS)
-    valid_loader  = DataLoader(dataset=valid_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
-    test_loader   = DataLoader(dataset=test_dataset,  batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+    train_dataset  = CACD_Dataset(df=TRAIN_DF, img_dir=IMAGE_PATH, transform=custom_transform)
+    train2_dataset = CACD_Dataset(df=TRAIN_DF, img_dir=IMAGE_PATH, transform=custom_transform2)
+    valid2_dataset = CACD_Dataset(df=VALID_DF, img_dir=IMAGE_PATH, transform=custom_transform2)
+    test2_dataset  = CACD_Dataset(df=TEST_DF,  img_dir=IMAGE_PATH, transform=custom_transform2)
+    train_loader   = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=True,  num_workers=NUM_WORKERS)
+    train2_loader  = DataLoader(dataset=train2_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+    valid2_loader  = DataLoader(dataset=valid2_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+    test2_loader   = DataLoader(dataset=test2_dataset,  batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
 
 
     ##############################
@@ -188,7 +193,8 @@ for RANDOM_SEED in range(20):
             #
             x = x.view(x.size(0), -1)
             #
-            fc = self.fc(x)
+            fc = self.fc(x)+1.0*(NUM_CLASSES-2.)/2.
+            #
             return fc
 
     def resnet(num_classes, grayscale):
@@ -200,182 +206,186 @@ for RANDOM_SEED in range(20):
     ##############################
     # Settings
     ##############################
-    def loss_fn(g, targets):
-        return torch.mean(torch.abs(targets.float()-g.flatten()))
+    def loss_fn(a, targets):
+        return torch.mean(torch.abs(targets.float()-a.flatten()))
 
     torch.manual_seed(RANDOM_SEED)
     torch.cuda.manual_seed(RANDOM_SEED)
     model = resnet(NUM_CLASSES, GRAYSCALE)
     model.to(DEVICE)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, eps=1e-6)
+    #scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda = lambda epoch: 0.1 ** (epoch/NUM_EPOCHS))
 
-    def compute_errors(model, data_loader, labeling, train=None, V_Z=None, V_A=None, V_S=None):
+    def OT_func(a, y, K, loss):
+        #sort (a,y)
+        a, idx = torch.sort(a.reshape(-1))
+        y = y[idx]
+        #all size n1, unique size n2
+        n1 = a.shape[0]
+        ua = a.unique(sorted=True).to(dtype=torch.float64)
+        n2 = ua.shape[0]
+        #DP matrix
+        L  = torch.zeros(n2, K, dtype=torch.float64).to(DEVICE)
+        #
+        Ys = y[a==ua[0]]
+        for k in range(K):
+            L[0,k] = torch.sum(loss[Ys,k])
+        #
+        for j in range(1,n2):
+            Ys = y[a==ua[j]]
+            for k in range(K):
+                L[j,k] = torch.min(L[j-1,:k+1]) + torch.sum(loss[Ys,k])
+        #threshold parameters
+        t = torch.zeros(K-1, dtype=torch.float64).to(DEVICE)
+        #
+        I = torch.argmin(L[-1,:-1]).item()
+        for k in range(I,K-1): t[k] = 10.**8
+        #
+        for j in reversed(range(n2-1)):
+            J = torch.argmin(L[j,:I+1]).item()
+            if I!=J:
+                for k in range(J,I):
+                    t[k] = (ua[j]+ua[j+1])*0.5
+                I = J
+        #
+        for k in range(I): t[k] = -10.**8
+        return t
+
+    def compute_errors(model, data_loader, labeling, train=None, t_Z=None, t_A=None, t_S=None):
         MZE, MAE, MSE, num_examples = 0., 0., 0., 0
-        if labeling=='IOT' and train==True:
-            L_Z = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
-            for j in range(NUM_CLASSES):
-                for k in range(NUM_CLASSES):
-                    if j!=k: L_Z[j,k] = 1.
-            L_A = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
-            for j in range(NUM_CLASSES):
-                for k in range(NUM_CLASSES):
-                    L_A[j,k] = abs(j-k)
-            L_S = torch.zeros(NUM_CLASSES,NUM_CLASSES, dtype=torch.float).to(DEVICE)
-            for j in range(NUM_CLASSES):
-                for k in range(NUM_CLASSES):
-                    L_S[j,k] = (j-k)**2
-        if labeling=='IOT' and train==True:
-            allg = torch.tensor([], dtype=torch.float).to(DEVICE)
+        if labeling=='OT' and train==True:
+            L_Z = torch.zeros(NUM_CLASSES, NUM_CLASSES, dtype=torch.float).to(DEVICE)
+            for j, k in product(range(NUM_CLASSES),range(NUM_CLASSES)):
+                if j!=k: L_Z[j,k] = 1.
+            L_A = torch.zeros(NUM_CLASSES, NUM_CLASSES, dtype=torch.float).to(DEVICE)
+            for j, k in product(range(NUM_CLASSES),range(NUM_CLASSES)):
+                L_A[j,k] = abs(j-k)
+            L_S = torch.zeros(NUM_CLASSES, NUM_CLASSES, dtype=torch.float).to(DEVICE)
+            for j, k in product(range(NUM_CLASSES),range(NUM_CLASSES)):
+                L_S[j,k] = (j-k)**2
+            #
+            alla = torch.tensor([], dtype=torch.float).to(DEVICE)
             ally = torch.tensor([], dtype=torch.long).to(DEVICE)
         for i, (features, targets) in enumerate(data_loader):
             features, targets = features.to(DEVICE), targets.to(DEVICE)
-            g = model(features)
+            a = model(features)
             num_examples += targets.size(0)
             #
-            if labeling=='NNT':
+            if labeling=='NT':
                 b = (torch.arange(NUM_CLASSES-1).float()+0.5).to(DEVICE)
-                predicts = torch.sum(g-b>=0., 1)
+                predicts = torch.sum(a-b>=0., 1)
                 #
                 MZE += torch.sum(predicts != targets)
                 MAE += torch.sum(torch.abs(predicts - targets))
                 MSE += torch.sum((predicts - targets)**2)
-            if labeling=='IOT' and train==True:
-                allg = torch.cat((allg, g))
-                ally = torch.cat((ally, targets))
-            if labeling=='IOT' and train==False:
-                predicts_Z = torch.sum(g-V_Z>=0., 1)
+            if labeling=='OT' and train==False:
+                predicts_Z = torch.sum(a-t_Z>=0., 1)
+                predicts_A = torch.sum(a-t_A>=0., 1)
+                predicts_S = torch.sum(a-t_S>=0., 1)
+                #
                 MZE += torch.sum(predicts_Z != targets)
-                #
-                predicts_A = torch.sum(g-V_A>=0., 1)
                 MAE += torch.sum(torch.abs(predicts_A - targets))
-                #
-                predicts_S = torch.sum(g-V_S>=0., 1)
                 MSE += torch.sum((predicts_S - targets)**2)
-        if labeling=='IOT' and train==True:
-            allg, indeces = torch.sort(allg,0)
-            ally = ally[indeces.reshape(-1)]
+            if labeling=='OT' and train==True:
+                alla = torch.cat([alla, a])
+                ally = torch.cat([ally, targets])
+        if labeling=='OT' and train==True:
+            t_Z = OT_func(alla, ally, NUM_CLASSES, L_Z)
+            t_A = OT_func(alla, ally, NUM_CLASSES, L_A)
+            t_S = OT_func(alla, ally, NUM_CLASSES, L_S)
             #
-            M_Z = torch.zeros(NUM_CLASSES-1, num_examples+1, dtype=torch.float).to(DEVICE)
-            for i in range(num_examples):
-                M_Z[:,i+1] = M_Z[:,i] + L_Z[:-1,ally[i]] - L_Z[1:,ally[i]]
-            tmp1 = torch.argmin(M_Z, 1)-1; tmp1[tmp1<0] = 0
-            tmp2 = torch.argmin(M_Z, 1);   tmp2[tmp2==num_examples] = num_examples-1
-            V_Z = (allg[tmp1,0] + allg[tmp2,0])/2.
+            predicts_Z = torch.sum(alla-t_Z>=0., 1)
+            predicts_A = torch.sum(alla-t_A>=0., 1)
+            predicts_S = torch.sum(alla-t_S>=0., 1)
             #
-            M_A = torch.zeros(NUM_CLASSES-1, num_examples+1, dtype=torch.float).to(DEVICE)
-            for i in range(num_examples):
-                M_A[:,i+1] = M_A[:,i] + L_A[:-1,ally[i]] - L_A[1:,ally[i]]
-            tmp1 = torch.argmin(M_A, 1)-1; tmp1[tmp1<0] = 0
-            tmp2 = torch.argmin(M_A, 1);   tmp2[tmp2==num_examples] = num_examples-1
-            V_A = (allg[tmp1,0] + allg[tmp2,0])/2.
-            #
-            M_S = torch.zeros(NUM_CLASSES-1, num_examples+1, dtype=torch.float).to(DEVICE)
-            for i in range(num_examples):
-                M_S[:,i+1] = M_S[:,i] + L_S[:-1,ally[i]] - L_S[1:,ally[i]]
-            tmp1 = torch.argmin(M_S, 1)-1; tmp1[tmp1<0] = 0
-            tmp2 = torch.argmin(M_S, 1);   tmp2[tmp2==num_examples] = num_examples-1
-            V_S = (allg[tmp1,0] + allg[tmp2,0])/2.
-            #
-            predicts_Z = torch.sum(allg-V_Z>=0., 1)
             MZE = torch.sum(predicts_Z != ally)
-            #
-            predicts_A = torch.sum(allg-V_A>=0., 1)
             MAE = torch.sum(torch.abs(predicts_A - ally))
-            #
-            predicts_S = torch.sum(allg-V_S>=0., 1)
             MSE = torch.sum((predicts_S - ally)**2)
         MZE = MZE.float() / num_examples
         MAE = MAE.float() / num_examples
         MSE = MSE.float() / num_examples
-        if labeling=='NNT':
-            return MZE, MAE, torch.sqrt(MSE)
-        if labeling=='IOT' and train==True:
-            return MZE, MAE, torch.sqrt(MSE), int(torch.equal(V_Z, torch.sort(V_Z)[0])), int(torch.equal(V_A, torch.sort(V_A)[0])), int(torch.equal(V_S, torch.sort(V_S)[0])), V_Z, V_A, V_S
-        if labeling=='IOT' and train==False:
-            return MZE, MAE, torch.sqrt(MSE)
+        if labeling=='NT':
+            return MZE, MAE, MSE
+        if labeling=='OT' and train==True:
+            return MZE, MAE, MSE, t_Z, t_A, t_S
+        if labeling=='OT' and train==False:
+            return MZE, MAE, MSE
 
 
     ##############################
     # Validation Phase
     ##############################
-    start_time = time.time()
-
-    Best_NNT_Z, Best_NNT_A, Best_NNT_S = 10.**8, 10.**8, 10.**8
-    Best_IOT_Z, Best_IOT_A, Best_IOT_S = 10.**8, 10.**8, 10.**8
-
     for epoch in range(NUM_EPOCHS):
         # TRAINING
         model.train()
-        for batch_idx, (features, targets) in enumerate(train_loader):
+        for features, targets in train_loader:
             features, targets = features.to(DEVICE), targets.to(DEVICE)
             # FORWARD AND BACK PROP
-            g = model(features)
-            loss = loss_fn(g, targets)
+            a = model(features)
+            loss = loss_fn(a, targets)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            # LOGGING
-            if not batch_idx % 50:
-                s = ('Epoch: %03d/%03d | Batch %04d/%04d | Loss: %.4f' % (epoch+1, NUM_EPOCHS, batch_idx, len(train_dataset)//BATCH_SIZE, loss))
-                print(s)
-                with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
+            #print(loss.item())
+        #scheduler.step()
         # EVALUATION
+        best_loss = 10.**8
+        best_NT_Z, best_NT_A, best_NT_S = 10.**8, 10.**8, 10.**8
+        best_OT_Z, best_OT_A, best_OT_S = 10.**8, 10.**8, 10.**8
         model.eval()
         with torch.set_grad_enabled(False):
-            NNT_Z,  NNT_A,  NNT_S  = compute_errors(model, valid_loader, 'NNT')
-            _, _, _, vz_ord, va_ord, vs_ord, V_Z, V_A, V_S = compute_errors(model, train_loader, 'IOT', True)
-            IOT_Z, IOT_A, IOT_S = compute_errors(model, valid_loader, 'IOT', False, V_Z, V_A, V_S)
-        # SAVE BEST MODELS
-        if NNT_Z <= Best_NNT_Z: Best_NNT_Z, Best_NNT_Z_ep = NNT_Z, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-NNT-Z.pt'))
-        if NNT_A <= Best_NNT_A: Best_NNT_A, Best_NNT_A_ep = NNT_A, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-NNT-A.pt'))
-        if NNT_S <= Best_NNT_S: Best_NNT_S, Best_NNT_S_ep = NNT_S, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-NNT-S.pt'))
-        if IOT_Z <= Best_IOT_Z: Best_IOT_Z, Best_IOT_Z_ep = IOT_Z, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-IOT-Z.pt'))
-        if IOT_A <= Best_IOT_A: Best_IOT_A, Best_IOT_A_ep = IOT_A, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-IOT-A.pt'))
-        if IOT_S <= Best_IOT_S: Best_IOT_S, Best_IOT_S_ep = IOT_S, epoch; torch.save(model.state_dict(), os.path.join(PATH, 'Best-IOT-S.pt'))
-        # SAVE CURRENT/BEST ERRORS/TIME
-        s = 'MZE/MAE/RMSE | Current : %.4f/%.4f/%.4f/%.4f/%.4f/%.4f Ep. %d Ord. %d/%d/%d | Best-NNT : %.4f/%.4f/%.4f Ep. %d/%d/%d | Best-IOT : %.4f/%.4f/%.4f Ep. %d/%d/%d' % ( 
-            NNT_Z, NNT_A, NNT_S, IOT_Z, IOT_A, IOT_S, epoch, vz_ord, va_ord, vs_ord,
-            Best_NNT_Z,  Best_NNT_A,  Best_NNT_S,  Best_NNT_Z_ep,  Best_NNT_A_ep,  Best_NNT_S_ep,
-            Best_IOT_Z, Best_IOT_A, Best_IOT_S, Best_IOT_Z_ep, Best_IOT_A_ep, Best_IOT_S_ep)
-        print(s)
-        with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
-        #
-        s = 'Time elapsed: %.4f min' % ((time.time() - start_time)/60)
-        print(s)
-        with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
-
-    ##############################
-    # Test Phase
-    ##############################
-    for labeling in ['NNT', 'IOT']:
-        for task in ['Z', 'A', 'S']:
-            # SAVE BEST ERRORS
-            model.load_state_dict(torch.load(os.path.join(PATH, 'Best-%s-%s.pt'%(labeling, task))))
-            model.eval()
-            with torch.set_grad_enabled(False):
-                if labeling=='NNT':
-                    tr_MZE, tr_MAE, tr_MSE = compute_errors(model, train_loader, labeling)
-                    va_MZE, va_MAE, va_MSE = compute_errors(model, valid_loader, labeling)
-                    te_MZE, te_MAE, te_MSE = compute_errors(model, test_loader,  labeling)
-                    #
-                    s = 'Best-%s-%s MZE/MAE/RMSE | Train: %.4f/%.4f/%.4f | Valid: %.4f/%.4f/%.4f | Test: %.4f/%.4f/%.4f' % (
-                        labeling, task, tr_MZE, tr_MAE, tr_MSE, va_MZE, va_MAE, va_MSE, te_MZE, te_MAE, te_MSE)
-                    print(s)
-                    with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
-                if labeling=='IOT':
-                    tr_MZE, tr_MAE, tr_MSE, vz_ord, va_ord, vs_ord, V_Z, V_A, V_S = compute_errors(model, train_loader, labeling, True)
-                    va_MZE, va_MAE, va_MSE = compute_errors(model, valid_loader, labeling, False, V_Z, V_A, V_S)
-                    te_MZE, te_MAE, te_MSE = compute_errors(model, test_loader,  labeling, False, V_Z, V_A, V_S)
-                    #
-                    s = 'Best-%s-%s MZE/MAE/RMSE | Train: %.4f/%.4f/%.4f | Valid: %.4f/%.4f/%.4f | Test: %.4f/%.4f/%.4f, Order | v: %d/%d/%d' % (
-                        labeling, task, tr_MZE, tr_MAE, tr_MSE, va_MZE, va_MAE, va_MSE, te_MZE, te_MAE, te_MSE, vz_ord, va_ord, vs_ord)
-                    print(s)
-                    with open(LOGFILE, 'a') as f: f.write('%s\n' % s)
-
-    os.remove(os.path.join(PATH, 'Best-NNT-Z.pt'))
-    os.remove(os.path.join(PATH, 'Best-NNT-A.pt'))
-    os.remove(os.path.join(PATH, 'Best-NNT-S.pt'))
-    os.remove(os.path.join(PATH, 'Best-IOT-Z.pt'))
-    os.remove(os.path.join(PATH, 'Best-IOT-A.pt'))
-    os.remove(os.path.join(PATH, 'Best-IOT-S.pt'))
-
+            #surrogate risk
+            tr_loss, va_loss, te_loss, tr_n, va_n, te_n = 0., 0., 0., 0, 0, 0
+            for features, targets in train2_loader:
+                features, targets = features.to(DEVICE), targets.to(DEVICE); n = len(targets)
+                a = model(features); tr_loss += loss_fn(a, targets)*n; tr_n += n
+            for features, targets in valid2_loader:
+                features, targets = features.to(DEVICE), targets.to(DEVICE); n = len(targets)
+                a = model(features); va_loss += loss_fn(a, targets)*n; va_n += n
+            for features, targets in test2_loader:
+                features, targets = features.to(DEVICE), targets.to(DEVICE); n = len(targets)
+                a = model(features); te_loss += loss_fn(a, targets)*n; te_n += n
+            tr_loss = tr_loss/tr_n; va_loss = va_loss/va_n; te_loss = te_loss/te_n
+            #
+            print(tr_loss, va_loss, te_loss)
+            s_LO = '%f,%f,%f' % (tr_loss, va_loss, te_loss)
+            with open(LOGFILE_LO, 'a') as f: f.write('%s\n' % s_LO)
+            #if va_loss<best_loss: best_loss = va_loss; torch.save(model.state_dict(), os.path.join(PATH, 'best_loss.pt'))
+            #task risk with NT labeling
+            tr_NT_Z, tr_NT_A, tr_NT_S = compute_errors(model, train2_loader, 'NT')
+            va_NT_Z, va_NT_A, va_NT_S = compute_errors(model, valid2_loader, 'NT')
+            te_NT_Z, te_NT_A, te_NT_S = compute_errors(model, test2_loader,  'NT')
+            #
+            print(tr_NT_Z, tr_NT_A, tr_NT_S, va_NT_Z, va_NT_A, va_NT_S, te_NT_Z, te_NT_A, te_NT_S)
+            s_NT = '%f,%f,%f,%f,%f,%f,%f,%f,%f' % (tr_NT_Z, tr_NT_A, tr_NT_S, va_NT_Z, va_NT_A, va_NT_S, te_NT_Z, te_NT_A, te_NT_S)
+            with open(LOGFILE_NT, 'a') as f: f.write('%s\n' % s_NT)
+            #if va_NT_Z<best_NT_Z: best_NT_Z = va_NT_Z; torch.save(model.state_dict(), os.path.join(PATH, 'best_NT_Z.pt'))
+            #if va_NT_A<best_NT_A: best_NT_A = va_NT_A; torch.save(model.state_dict(), os.path.join(PATH, 'best_NT_A.pt'))
+            #if va_NT_S<best_NT_S: best_NT_S = va_NT_S; torch.save(model.state_dict(), os.path.join(PATH, 'best_NT_S.pt'))
+            #task risk with OT labeling
+            _, _, _,  t_Z,  t_A,  t_S = compute_errors(model, train2_loader, 'OT', True)
+            tr_OT_Z, tr_OT_A, tr_OT_S = compute_errors(model, train2_loader, 'OT', False, t_Z, t_A, t_S)
+            va_OT_Z, va_OT_A, va_OT_S = compute_errors(model, valid2_loader, 'OT', False, t_Z, t_A, t_S)
+            te_OT_Z, te_OT_A, te_OT_S = compute_errors(model, test2_loader,  'OT', False, t_Z, t_A, t_S)
+            #
+            print(tr_OT_Z, tr_OT_A, tr_OT_S, va_OT_Z, va_OT_A, va_OT_S, te_OT_Z, te_OT_A, te_OT_S)
+            s_OT = '%f,%f,%f,%f,%f,%f,%f,%f,%f' % (tr_OT_Z, tr_OT_A, tr_OT_S, va_OT_Z, va_OT_A, va_OT_S, te_OT_Z, te_OT_A, te_OT_S)
+            with open(LOGFILE_OT, 'a') as f: f.write('%s\n' % s_OT)
+            #if va_OT_Z<best_OT_Z: best_OT_Z = va_OT_Z; torch.save(model.state_dict(), os.path.join(PATH, 'best_OT_Z.pt'))
+            #if va_OT_A<best_OT_A: best_OT_A = va_OT_A; torch.save(model.state_dict(), os.path.join(PATH, 'best_OT_A.pt'))
+            #if va_OT_S<best_OT_S: best_OT_S = va_OT_S; torch.save(model.state_dict(), os.path.join(PATH, 'best_OT_S.pt'))
+        #OT parameters for Task-Z
+        t_Z = t_Z.to('cpu').detach().numpy().copy()
+        s = '%f'%t_Z[0]
+        for i in range(1,len(t_Z)): s = s+',%f'%t_Z[i]
+        with open(LOGFILE_Z, 'a') as f: f.write('%s\n' % s)
+        #OT parameters for Task-A
+        t_A = t_A.to('cpu').detach().numpy().copy()
+        s = '%f'%t_A[0]
+        for i in range(1,len(t_A)): s = s+',%f'%t_A[i]
+        with open(LOGFILE_A, 'a') as f: f.write('%s\n' % s)
+        #OT parameters for Task-S
+        t_S = t_S.to('cpu').detach().numpy().copy()
+        s = '%f'%t_S[0]
+        for i in range(1,len(t_S)): s = s+',%f'%t_S[i]
+        with open(LOGFILE_S, 'a') as f: f.write('%s\n' % s)
