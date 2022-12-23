@@ -1,13 +1,14 @@
-#import
+#!/bin/python
 import os
 
-for a in [2]:
-    for b in [0,1,2,3,4]:
-        for m in ["AD"]:
-            os.system("python ./NO.py %s %d %d"%(m,a,b))
-        for m in ["ODOB_LogiIT"]:
-            os.system("python ./SO.py %s %d %d"%(m,a,b))
-        for m in ["ODOB_LogiAT","POOCL_NLL"]:
-            os.system("python ./LSO.py %s %d %d"%(m,a,b))
-        for m in ["ODB_LogiIT"]:
-            os.system("python ./MSO.py %s %d %d"%(m,a,b))
+for a in range(7):
+    for b in range(29):
+        if a>0 or b<17:
+            os.system("python ./NO.py AD %d %d"%(a,b))
+            os.system("python ./SO.py ODOB_LogiIT %d %d"%(a,b))
+            os.system("python ./SO.py ODOB_HingIT %d %d"%(a,b))
+            os.system("python ./SO.py ODOB_HingAT %d %d"%(a,b))
+            os.system("python ./LSO.py ODOB_LogiAT %d %d"%(a,b))
+            os.system("python ./LSO.py POOCL_NLL %d %d"%(a,b))
+            os.system("python ./MSO.py ODB_LogiIT %d %d"%(a,b))
+            os.system("python ./MSO.py ODB_HingIT %d %d"%(a,b))

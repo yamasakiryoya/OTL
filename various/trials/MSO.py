@@ -13,12 +13,15 @@ from multiprocessing import Pool,Process,Pipe,Manager
 import MyFunc as MF
 
 #parameter
-TR, MP, NS, EP = 50, 5, 100, 500
-datatype_set = ['DR5','DR10','OR']
-dataname_set = [['abalone-5','bank1-5','bank2-5','calhousing-5','census1-5','census2-5','computer1-5','computer2-5'], 
-                ['abalone-10','bank1-10','bank2-10','calhousing-10','census1-10','census2-10','computer1-10','computer2-10'], 
-                ['car','ERA','LEV','SWD','winequality-red']]
-
+TR, MP, NS = 50, 5, 100
+datatype_set = ['OR','EF3','EF5','EF10','EL3','EL5','EL10']
+dataname_set = [['contact-lenses','pasture','squash-stored','squash-unstored','tae','newthyroid','balance-scale','SWD','car','bondrate','toy','eucalyptus','LEV','automobile','winequality-red','ESL','ERA'],
+                ['EF3-2d-planes','EF3-abalone','EF3-ailerons','EF3-auto-mpg','EF3-auto-price','EF3-bank-domain-1','EF3-bank-domain-2','EF3-boston-housing','EF3-california-housing','EF3-census-1','EF3-census-2','EF3-computer-activity-1','EF3-computer-activity-2','EF3-delta-ailerons','EF3-delta-elevators','EF3-diabetes','EF3-elevators','EF3-friedman-artificial','EF3-kinematics-of-robot-arm','EF3-machine-cpu','EF3-mv-artificial','EF3-pole-telecomm','EF3-pumadyn-domain-1','EF3-pumadyn-domain-2','EF3-pyrimidines','EF3-servo','EF3-stock-domain','EF3-triazines','EF3-wisconsin-breast-cancer'], 
+                ['EF5-2d-planes','EF5-abalone','EF5-ailerons','EF5-auto-mpg','EF5-auto-price','EF5-bank-domain-1','EF5-bank-domain-2','EF5-boston-housing','EF5-california-housing','EF5-census-1','EF5-census-2','EF5-computer-activity-1','EF5-computer-activity-2','EF5-delta-ailerons','EF5-delta-elevators','EF5-diabetes','EF5-elevators','EF5-friedman-artificial','EF5-kinematics-of-robot-arm','EF5-machine-cpu','EF5-mv-artificial','EF5-pole-telecomm','EF5-pumadyn-domain-1','EF5-pumadyn-domain-2','EF5-pyrimidines','EF5-servo','EF5-stock-domain','EF5-triazines','EF5-wisconsin-breast-cancer'], 
+                ['EF10-2d-planes','EF10-abalone','EF10-ailerons','EF10-auto-mpg','EF10-auto-price','EF10-bank-domain-1','EF10-bank-domain-2','EF10-boston-housing','EF10-california-housing','EF10-census-1','EF10-census-2','EF10-computer-activity-1','EF10-computer-activity-2','EF10-delta-ailerons','EF10-delta-elevators','EF10-diabetes','EF10-elevators','EF10-friedman-artificial','EF10-kinematics-of-robot-arm','EF10-machine-cpu','EF10-mv-artificial','EF10-pole-telecomm','EF10-pumadyn-domain-1','EF10-pumadyn-domain-2','EF10-pyrimidines','EF10-servo','EF10-stock-domain','EF10-triazines','EF10-wisconsin-breast-cancer'], 
+                ['EL3-2d-planes','EL3-abalone','EL3-ailerons','EL3-auto-mpg','EL3-auto-price','EL3-bank-domain-1','EL3-bank-domain-2','EL3-boston-housing','EL3-california-housing','EL3-census-1','EL3-census-2','EL3-computer-activity-1','EL3-computer-activity-2','EL3-delta-ailerons','EL3-delta-elevators','EL3-diabetes','EL3-elevators','EL3-friedman-artificial','EL3-kinematics-of-robot-arm','EL3-machine-cpu','EL3-mv-artificial','EL3-pole-telecomm','EL3-pumadyn-domain-1','EL3-pumadyn-domain-2','EL3-pyrimidines','EL3-servo','EL3-stock-domain','EL3-triazines','EL3-wisconsin-breast-cancer'], 
+                ['EL5-2d-planes','EL5-abalone','EL5-ailerons','EL5-auto-mpg','EL5-auto-price','EL5-bank-domain-1','EL5-bank-domain-2','EL5-boston-housing','EL5-california-housing','EL5-census-1','EL5-census-2','EL5-computer-activity-1','EL5-computer-activity-2','EL5-delta-ailerons','EL5-delta-elevators','EL5-diabetes','EL5-elevators','EL5-friedman-artificial','EL5-kinematics-of-robot-arm','EL5-machine-cpu','EL5-mv-artificial','EL5-pole-telecomm','EL5-pumadyn-domain-1','EL5-pumadyn-domain-2','EL5-pyrimidines','EL5-servo','EL5-stock-domain','EL5-triazines','EL5-wisconsin-breast-cancer'], 
+                ['EL10-2d-planes','EL10-abalone','EL10-ailerons','EL10-auto-mpg','EL10-auto-price','EL10-bank-domain-1','EL10-bank-domain-2','EL10-boston-housing','EL10-california-housing','EL10-census-1','EL10-census-2','EL10-computer-activity-1','EL10-computer-activity-2','EL10-delta-ailerons','EL10-delta-elevators','EL10-diabetes','EL10-elevators','EL10-friedman-artificial','EL10-kinematics-of-robot-arm','EL10-machine-cpu','EL10-mv-artificial','EL10-pole-telecomm','EL10-pumadyn-domain-1','EL10-pumadyn-domain-2','EL10-pyrimidines','EL10-servo','EL10-stock-domain','EL10-triazines','EL10-wisconsin-breast-cancer']]
 #dataset
 args = sys.argv
 method, A, B = args[1], int(args[2]), int(args[3])
@@ -26,6 +29,8 @@ trte_data = np.loadtxt("../datasets/"+datatype_set[A]+"/"+dataname_set[A][B]+".c
 samplenum = trte_data.shape[0]
 dimension = trte_data.shape[1]-1
 classnum  = int(np.max(trte_data[:,-1])-np.min(trte_data[:,-1])+1)
+if samplenum<=2000: EP = 500
+else: EP = 100
 print(method, dataname_set[A][B], samplenum, dimension, classnum)
 
 #learning function
@@ -34,7 +39,8 @@ def learning(seed, train_data, valid_data, test_data, node, epoch):
     torch.manual_seed(seed)
     device = torch.device('cpu')
     #arrange dataset
-    train_loader, train_loader2, valid_loader, test_loader = MF.train_test_loader(train_data, valid_data, test_data, classnum, 256, "O", device)
+    if train_data.shape[0]<256: train_loader, train_loader2, valid_loader, test_loader = MF.train_test_loader(train_data, valid_data, test_data, classnum, 16, "O", device)
+    else: train_loader, train_loader2, valid_loader, test_loader = MF.train_test_loader(train_data, valid_data, test_data, classnum, 256, "O", device)
     #set model, optimizer
     model = MF.ODB(dimension, node, classnum-1).to(device)
     optimizer = optim.Adam(model.parameters(), lr=.1**2.5, eps=.1**6)
@@ -56,7 +62,7 @@ def learning(seed, train_data, valid_data, test_data, node, epoch):
         res[e,18:21] = eval("MF.test_"+method.split('_')[1])(test_loader,  classnum, "O", device, model, "MT", False, None, None, None)
         res[e,21:24] = eval("MF.test_"+method.split('_')[1])(test_loader,  classnum, "O", device, model, "ST", False, None, None, None)
         res[e,24:27] = eval("MF.test_"+method.split('_')[1])(test_loader,  classnum, "O", device, model, "OT", False, t_Z, t_A, t_S)
-        #print(res[e,18:])
+        print(seed,e,res[e,18:])
     result = np.zeros(len(res[0,:]))
     for i in range(len(res[0,:])):
         result[i] = res[MF.back_argmin(res[:,int((len(res[0,:])/3)+i%(len(res[0,:])/3))]),i]
@@ -65,8 +71,8 @@ def learning(seed, train_data, valid_data, test_data, node, epoch):
 #test function
 def test(seed, results):
     #load dataset
-    trva_data,  test_data  = train_test_split(trte_data, test_size=0.2, random_state=seed, stratify=trte_data[:,-1])
-    train_data, valid_data = train_test_split(trva_data, test_size=0.1, random_state=seed, stratify=trva_data[:,-1])
+    train_data, vate_data = train_test_split(trte_data, train_size=0.72, random_state=seed)
+    valid_data, test_data = train_test_split(vate_data, train_size=0.08/0.28, random_state=seed)
     #test
     res = learning(seed, train_data, valid_data, test_data, NS, EP)
     results[seed] = res.tolist()

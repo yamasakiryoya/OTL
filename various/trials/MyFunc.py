@@ -221,26 +221,25 @@ def OT_func(a, y, K, device, ZAS):
     n2 = ua.shape[0]
     #DP matrix
     L  = torch.zeros(n2, K, dtype=torch.float64).to(device)
-    M  = torch.zeros(n2, K, dtype=torch.long).to(device)
     #
     Ys = y[a==ua[0]]
     for k in range(K):
         L[0,k] = torch.sum(loss[Ys,k])
-        M[0,k] = torch.argmin(L[0,:k+1])
     #
     for j in range(1,n2):
         Ys = y[a==ua[j]]
+        tmp = 10.**8
         for k in range(K):
-            L[j,k] = torch.min(L[j-1,:k+1]) + torch.sum(loss[Ys,k])
-            M[j,k] = torch.argmin(L[j,:k+1])
+            if L[j-1,k].item()<tmp: tmp = L[j-1,k].item()
+            L[j,k] = tmp + torch.sum(loss[Ys,k])
     #threshold parameters
     t = torch.zeros(K-1, dtype=torch.float64).to(device)
     #
-    I = M[-1,-1].item()
+    I = int(torch.argmin(L[-1,:]).item())
     for k in range(I,K-1): t[k] = 10.**8
     #
     for j in reversed(range(n2-1)):
-        J = M[j,I].item()
+        J = int(torch.argmin(L[j,:(I+1)]).item())
         if I!=J:
             for k in range(J,I): t[k] = (ua[j]+ua[j+1])*0.5
             I = J

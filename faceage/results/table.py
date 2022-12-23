@@ -1,79 +1,88 @@
-import re
+import os
 import numpy as np
-from decimal import Decimal, ROUND_HALF_UP, ROUND_HALF_EVEN
 
-methods  = ['SVOR','NLL','ANLCL','ordered-SVOR','ordered-NLL','ordered-ANLCL','AD']
-datasets = ['morph2','cacd','afad']
-TNUM = 20
-RES_A, MEA_A, STD_A = np.zeros((3,18,TNUM)), np.zeros((3,18)), np.zeros((3,18))
-RES_S, MEA_S, STD_S = np.zeros((3,18,TNUM)), np.zeros((3,18)), np.zeros((3,18))
+T  = ['Z','A','S']
+D  = ['morph2','cacd','afad']
+M  = ['AD','hing-IT','ord-hing-IT','ord-hing-AT','logi-IT','ord-logi-IT','ord-logi-AT','POOCL-NLL']
+L  = [['NT','OT'],['MT','ST','OT'],['ST','OT'],['ST','OT'],['MT','ST','OT'],['ST','OT'],['ST','RL','OT'],['ST','RL','OT']]
+NUM = 10
 
-for M in [0,1,2,3,4,5,6]:
-    m = methods[M]
-    for D in [0,1,2]:
-        d = datasets[D]
-        for seed in range(TNUM):
-            path = '../' + d + '/MTM/' + m + '/seed' + str(seed) + '/training.log'
-            with open(path) as f: l1 = f.readlines()
-            #
-            if M==0:
-                RES_A[D, 0,seed] = re.split('[/ ]', re.split('[,]', l1[-5])[-2])[-2]
-                RES_S[D, 0,seed] = re.split('[/ ]', re.split('[,]', l1[-4])[-2])[-1]
-                RES_A[D, 1,seed] = re.split('[/ ]', re.split('[,]', l1[-2])[-2])[-2]
-                RES_S[D, 1,seed] = re.split('[/ ]', re.split('[,]', l1[-1])[-2])[-1]
-            if M==1:
-                RES_A[D, 2,seed] = re.split('[/ ]', re.split('[,]', l1[-5])[-2])[-2]
-                RES_S[D, 2,seed] = re.split('[/ ]', re.split('[,]', l1[-4])[-2])[-1]
-                RES_A[D, 3,seed] = re.split('[/ ]', l1[-8])[-2]
-                RES_S[D, 3,seed] = re.split('[/ ]', l1[-7])[-1]
-                RES_A[D, 4,seed] = re.split('[/ ]', re.split('[,]', l1[-2])[-2])[-2]
-                RES_S[D, 4,seed] = re.split('[/ ]', re.split('[,]', l1[-1])[-2])[-1]
-            if M==2:
-                RES_A[D, 5,seed] = re.split('[/ ]', re.split('[,]', l1[-5])[-2])[-2]
-                RES_S[D, 5,seed] = re.split('[/ ]', re.split('[,]', l1[-4])[-2])[-1]
-                RES_A[D, 6,seed] = re.split('[/ ]', l1[-8])[-2]
-                RES_S[D, 6,seed] = re.split('[/ ]', l1[-7])[-1]
-                RES_A[D, 7,seed] = re.split('[/ ]', re.split('[,]', l1[-2])[-2])[-2]
-                RES_S[D, 7,seed] = re.split('[/ ]', re.split('[,]', l1[-1])[-2])[-1]
-            if M==3:
-                RES_A[D, 8,seed] = re.split('[/ ]', re.split('[,]', l1[-5])[-2])[-2]
-                RES_S[D, 8,seed] = re.split('[/ ]', re.split('[,]', l1[-4])[-2])[-1]
-                RES_A[D, 9,seed] = re.split('[/ ]', re.split('[,]', l1[-2])[-2])[-2]
-                RES_S[D, 9,seed] = re.split('[/ ]', re.split('[,]', l1[-1])[-2])[-1]
-            if M==4:
-                RES_A[D,10,seed] = re.split('[/ ]', re.split('[,]', l1[-5])[-2])[-2]
-                RES_S[D,10,seed] = re.split('[/ ]', re.split('[,]', l1[-4])[-2])[-1]
-                RES_A[D,11,seed] = re.split('[/ ]', l1[-8])[-2]
-                RES_S[D,11,seed] = re.split('[/ ]', l1[-7])[-1]
-                RES_A[D,12,seed] = re.split('[/ ]', re.split('[,]', l1[-2])[-2])[-2]
-                RES_S[D,12,seed] = re.split('[/ ]', re.split('[,]', l1[-1])[-2])[-1]
-            if M==5:
-                RES_A[D,13,seed] = re.split('[/ ]', re.split('[,]', l1[-5])[-2])[-2]
-                RES_S[D,13,seed] = re.split('[/ ]', re.split('[,]', l1[-4])[-2])[-1]
-                RES_A[D,14,seed] = re.split('[/ ]', l1[-8])[-2]
-                RES_S[D,14,seed] = re.split('[/ ]', l1[-7])[-1]
-                RES_A[D,15,seed] = re.split('[/ ]', re.split('[,]', l1[-2])[-2])[-2]
-                RES_S[D,15,seed] = re.split('[/ ]', re.split('[,]', l1[-1])[-2])[-1]
-            if M==6:
-                RES_A[D,16,seed] = re.split('[/ ]', l1[-5])[-2]
-                RES_S[D,16,seed] = re.split('[/ ]', l1[-4])[-1]
-                RES_A[D,17,seed] = re.split('[/ ]', re.split('[,]', l1[-2])[-2])[-2]
-                RES_S[D,17,seed] = re.split('[/ ]', re.split('[,]', l1[-1])[-2])[-1]
+RES, MEA, STD = np.zeros((3,3,20,NUM)), np.zeros((3,3,20)), np.zeros((3,3,20))
+
+for t in range(len(T)):
+    for d in range(len(D)):
+        i = 0
+        for m in range(len(M)):
+            for l in L[m]:
+                for seed in range(NUM):
+                    tmp = np.loadtxt("../%s/result/%s/seed%d/training_%s.log"%(D[d],M[m],seed,l), delimiter=",")
+                    if t==2: tmp = np.sqrt(tmp)
+                    RES[t,d,i,seed] = tmp[np.argmin(tmp[:,3+t]),6+t]
+                i += 1
 
 
-for M in range(18):
-    for D in [0,1,2]:
-        MEA_A[D,M] = np.mean(RES_A[D,M,:])
-        MEA_S[D,M] = np.mean(RES_S[D,M,:])
-        STD_A[D,M] = np.std(RES_A[D,M,:])
-        STD_S[D,M] = np.std(RES_S[D,M,:])
+for t in range(len(T)):
+    for d in range(len(D)):
+        for i in range(20):
+            MEA[t,d,i] = np.mean(RES[t,d,i,:])
+            STD[t,d,i] = np.std(RES[t,d,i,:])
 
-for M in range(18):
-    for D in [0,1,2]:
-        print("$%.3f\pm%.3f$ & "%(
-            Decimal(str(MEA_A[D,M])).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP),
-            Decimal(str(STD_A[D,M])).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)),end='')
-        print("$%.3f\pm%.3f$ & "%(
-            Decimal(str(MEA_S[D,M])).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP),
-            Decimal(str(STD_S[D,M])).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)),end='')
+for t in range(len(T)):
+    for i in range(20):
+        for d in range(len(D)):
+            print("$%.4f_{%.4f}$ & "%(MEA[t,d,i],STD[t,d,i]),end='')
+        print("")
     print("")
+
+
+for t in range(len(T)):
+    for d in range(len(D)):
+        print("%d,%d"%(t,d),end=" ")
+        for i in range(20):
+            if np.min(MEA[t,d,:])==MEA[t,d,i]:
+                print(i, end=" ")
+        print("")
+    print("")
+
+from scipy import stats
+
+for t in range(len(T)):
+    for d in range(len(D)):
+        print(t,d,np.argmin(np.array([MEA[t,d,0],MEA[t,d,1]])),end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,0,:], RES[t,d,1,:], alternative='greater').pvalue)
+
+    for d in range(len(D)):
+        print(t,d,np.argmin(np.array([MEA[t,d,2],MEA[t,d,3],MEA[t,d,4]])),end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,2,:], RES[t,d,3,:], alternative='greater').pvalue,end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,2,:], RES[t,d,4,:], alternative='greater').pvalue,end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,3,:], RES[t,d,4,:], alternative='greater').pvalue)
+
+    for d in range(len(D)):
+        print(t,d,np.argmin(np.array([MEA[t,d,5],MEA[t,d,6]])),end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,5,:], RES[t,d,6,:], alternative='greater').pvalue)
+
+    for d in range(len(D)):
+        print(t,d,np.argmin(np.array([MEA[t,d,7],MEA[t,d,8]])),end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,7,:], RES[t,d,8,:], alternative='greater').pvalue)
+
+    for d in range(len(D)):
+        print(t,d,np.argmin(np.array([MEA[t,d,9],MEA[t,d,10],MEA[t,d,11]])),end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,9,:], RES[t,d,10,:], alternative='greater').pvalue,end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,9,:], RES[t,d,11,:], alternative='greater').pvalue,end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,10,:], RES[t,d,11,:], alternative='greater').pvalue)
+
+    for d in range(len(D)):
+        print(t,d,np.argmin(np.array([MEA[t,d,12],MEA[t,d,13]])),end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,12,:], RES[t,d,13,:], alternative='greater').pvalue)
+
+    for d in range(len(D)):
+        print(t,d,np.argmin(np.array([MEA[t,d,14],MEA[t,d,15],MEA[t,d,16]])),end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,14,:], RES[t,d,15,:], alternative='greater').pvalue,end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,14,:], RES[t,d,16,:], alternative='greater').pvalue,end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,15,:], RES[t,d,16,:], alternative='greater').pvalue)
+
+    for d in range(len(D)):
+        print(t,d,np.argmin(np.array([MEA[t,d,17],MEA[t,d,18],MEA[t,d,19]])),end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,17,:], RES[t,d,18,:], alternative='greater').pvalue,end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,17,:], RES[t,d,19,:], alternative='greater').pvalue,end="  ")
+        print("%.4f"%stats.mannwhitneyu(RES[t,d,18,:], RES[t,d,19,:], alternative='greater').pvalue)

@@ -14,4 +14,5 @@
 ## for various-domain datasets
 
 1. make tables: python bash.py and table.py in ./various/trials/
-2. make figures: python bash.py and python plot.py at ./various/plot/
+2. make tables: python bash.py and ratio.py in ./various/trials/
+3. make figures: python bash.py and python plot.py at ./various/plot/
