@@ -252,7 +252,7 @@ for RANDOM_SEED in range(10):
         #threshold parameters
         t = torch.zeros(K-1, dtype=torch.float64).to(DEVICE)
         #
-        I = torch.argmin(L[-1,:-1]).item()
+        I = torch.argmin(L[-1,:]).item()
         for k in range(I,K-1): t[k] = 10.**8
         #
         for j in reversed(range(n2-1)):
